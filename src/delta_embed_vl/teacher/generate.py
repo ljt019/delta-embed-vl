@@ -9,9 +9,12 @@ import numpy as np
 from datasets import Dataset
 from PIL import Image
 
-from delta_embed.data.download import CAULDRON_CONFIGS
-from delta_embed.data.preprocess import preprocess_cauldron_config, preprocess_wikipedia
-from delta_embed.settings import Settings
+from delta_embed_vl.data.download import CAULDRON_CONFIGS
+from delta_embed_vl.data.preprocess import (
+    preprocess_cauldron_config,
+    preprocess_wikipedia,
+)
+from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
 settings = Settings()
