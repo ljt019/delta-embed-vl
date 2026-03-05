@@ -43,12 +43,12 @@ uv run delta-embed-pipeline \
 ### Individual stages
 
 ```bash
-uv run prepare-data               # download + preprocess + teacher embeddings
+uv run prepare-data                # download + preprocess + teacher embeddings
 uv run train-model --batch-size 8  # distillation only
 uv run eval-model                  # MTEB eval from checkpoints/
 ```
 
-### Smoke test (limit=10)
+### Smoke test
 
 ```bash
 uv run delta-embed-pipeline --limit 10 --batch-size 4 --grad-accum-steps 8
