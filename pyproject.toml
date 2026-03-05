@@ -1,0 +1,60 @@
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+[project]
+name = "delta-embed"
+version = "0.1.0"
+description = "delta-embed model"
+readme = "README.md"
+authors = [
+    {name = "Lucien Thomas"},
+]
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=4.6.1",
+    "httpx>=0.28.1",
+    "mteb>=2.10.5",
+    "numpy>=2.4.2",
+    "openai>=2.24.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "torch>=2.0.0",
+    "torchvision>=0.20.0",
+    "transformers>=5.3.0",
+]
+
+
+[project.scripts]
+prepare-data = "delta_embed.main:prepare_data_cli"
+train-model = "delta_embed.main:train_model_cli"
+eval-model = "delta_embed.main:eval_model_cli"
+delta-embed-pipeline = "delta_embed.main:main"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[dependency-groups]
+dev = [
+  "ty",
+  "ruff",
+]
+
+[tool.ruff.lint]
+select = ["F", "I"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ty.environment]
+root = ["./src"]
