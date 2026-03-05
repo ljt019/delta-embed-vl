@@ -2,8 +2,6 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
-# 3c46fbb36acf
-
 
 class Settings(BaseSettings):
     data_dir: Path = Path("data")
