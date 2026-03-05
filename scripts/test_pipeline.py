@@ -2,8 +2,11 @@ import logging
 
 import numpy as np
 
-from delta_embed.data.preprocess import preprocess_cauldron_config, preprocess_wikipedia
-from delta_embed.teacher.generate import embed_cauldron_config, embed_wikipedia
+from delta_embed_vl.data.preprocess import (
+    preprocess_cauldron_config,
+    preprocess_wikipedia,
+)
+from delta_embed_vl.teacher.generate import embed_cauldron_config, embed_wikipedia
 
 logging.basicConfig(
     level=logging.INFO,
