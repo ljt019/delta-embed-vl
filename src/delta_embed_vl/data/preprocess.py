@@ -1,7 +1,11 @@
+import io
+import logging
 import re
 from pathlib import Path
+from typing import Any
 
 from datasets import Dataset
+from PIL import Image
 
 from delta_embed_vl.data.download import (
     CAULDRON_CONFIGS,
@@ -11,7 +15,9 @@ from delta_embed_vl.data.download import (
 )
 from delta_embed_vl.settings import Settings
 
+logger = logging.getLogger(__name__)
 _PROCESSED_DIR = Settings().data_dir / "processed"
+_ASSETS_DIR = _PROCESSED_DIR / "assets"
 
 ### Private
 
@@ -83,6 +89,58 @@ def _already_processed(path: Path) -> bool:
     return path.exists() and (path / "dataset_info.json").exists()
 
 
+def _coerce_image_to_rgb(
+    image: Image.Image | dict[str, Any] | str | Path | None,
+) -> Image.Image | None:
+    if image is None:
+        return None
+
+    if isinstance(image, Image.Image):
+        return image.convert("RGB")
+
+    if isinstance(image, (str, Path)):
+        path = Path(image)
+        if not path.exists():
+            return None
+        with Image.open(path) as loaded:
+            return loaded.convert("RGB")
+
+    image_bytes = image.get("bytes")
+    if image_bytes is not None:
+        if isinstance(image_bytes, memoryview):
+            image_bytes = image_bytes.tobytes()
+        elif isinstance(image_bytes, bytearray):
+            image_bytes = bytes(image_bytes)
+        elif isinstance(image_bytes, list):
+            image_bytes = bytes(image_bytes)
+        with Image.open(io.BytesIO(image_bytes)) as loaded:
+            return loaded.convert("RGB")
+
+    image_path = image.get("path")
+    if image_path:
+        path = Path(image_path)
+        if path.exists():
+            with Image.open(path) as loaded:
+                return loaded.convert("RGB")
+
+    return None
+
+
+def _materialize_image_asset(
+    image: Image.Image | dict[str, Any] | str | Path | None,
+    *,
+    out_path: Path,
+) -> str | None:
+    normalized = _coerce_image_to_rgb(image)
+    if normalized is None:
+        return None
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not out_path.exists():
+        normalized.save(out_path, format="PNG")
+    return str(out_path)
+
+
 ### Public
 
 
@@ -110,13 +168,15 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     """Convert one Cauldron config into a unified Arrow dataset on disk."""
     suffix = f"_test{limit}" if limit else ""
     out_path = _PROCESSED_DIR / "cauldron" / f"{config}{suffix}"
+    asset_dir = _ASSETS_DIR / "cauldron" / f"{config}{suffix}"
     if _already_processed(out_path):
         return Dataset.load_from_disk(str(out_path))
 
     raw = load_raw_cauldron(config, limit=limit)
 
     rows: dict[str, list] = {"text": [], "image": [], "modality": []}
-    for example in raw:
+    skipped_images = 0
+    for example_idx, example in enumerate(raw):
         text = _extract_cauldron_text(example["texts"])
         images = example["images"]
 
@@ -127,14 +187,28 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
                 rows["modality"].append("text")
             continue
 
-        for image in images:
+        for image_idx, image in enumerate(images):
+            image_path = _materialize_image_asset(
+                image,
+                out_path=asset_dir / f"{example_idx:08d}_{image_idx:02d}.png",
+            )
+            if image_path is None:
+                skipped_images += 1
+                continue
+
             modality = "text_image" if text else "image"
             rows["text"].append(text)
-            rows["image"].append(image)
+            rows["image"].append(image_path)
             rows["modality"].append(modality)
 
     ds = Dataset.from_dict(rows)
     ds.save_to_disk(str(out_path))
+    logger.info(
+        "Processed cauldron/%s: rows=%d skipped_images=%d",
+        config,
+        len(ds),
+        skipped_images,
+    )
     return ds
 
 

@@ -72,7 +72,7 @@ _INSTRUCTION = "Represent the user's input."
 _BATCH_SIZE = 1000
 
 
-def _resolve_image_path(image_path: str) -> Path:
+def _resolve_image_path(image_path: str | Path) -> Path | None:
     path = Path(image_path)
     if path.exists():
         return path
@@ -86,17 +86,24 @@ def _resolve_image_path(image_path: str) -> Path:
         if resolved is not None and resolved.exists():
             return resolved
 
-    raise FileNotFoundError(
-        f"Image not found at {image_path}. Expected local cache match under {_RAW_DATA_DIR}."
-    )
+    return None
 
 
-def _coerce_image(image: Image.Image | dict[str, Any] | None) -> Image.Image | None:
+def _coerce_image(
+    image: Image.Image | dict[str, Any] | str | Path | None,
+) -> Image.Image | None:
     if image is None:
         return None
 
     if isinstance(image, Image.Image):
-        return image
+        return image.convert("RGB")
+
+    if isinstance(image, (str, Path)):
+        resolved_path = _resolve_image_path(image)
+        if resolved_path is None:
+            return None
+        with Image.open(resolved_path) as loaded:
+            return loaded.convert("RGB")
 
     image_bytes = image.get("bytes")
     if image_bytes is not None:
@@ -110,15 +117,16 @@ def _coerce_image(image: Image.Image | dict[str, Any] | None) -> Image.Image | N
 
     image_path = image.get("path")
     if image_path:
-        return Image.open(_resolve_image_path(image_path)).convert("RGB")
+        resolved_path = _resolve_image_path(image_path)
+        if resolved_path is None:
+            return None
+        with Image.open(resolved_path) as loaded:
+            return loaded.convert("RGB")
 
-    raise ValueError("Image payload must contain either bytes or path.")
+    return None
 
 
-def _image_to_data_uri(image: Image.Image | dict[str, Any]) -> str:
-    image = _coerce_image(image)
-    if image is None:
-        raise ValueError("Expected image payload, got None.")
+def _image_to_data_uri(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
@@ -126,16 +134,17 @@ def _image_to_data_uri(image: Image.Image | dict[str, Any]) -> str:
 
 
 def _build_payload(
-    text: str | None, image: Image.Image | dict[str, Any] | None
+    text: str | None, image: Image.Image | dict[str, Any] | str | Path | None
 ) -> dict:
     """Build a vLLM chat-embedding request body for Qwen3-VL."""
     user_content: list[dict] = []
+    resolved_image = _coerce_image(image)
 
-    if image is not None:
+    if resolved_image is not None:
         user_content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": _image_to_data_uri(image)},
+                "image_url": {"url": _image_to_data_uri(resolved_image)},
             }
         )
 
@@ -176,6 +185,12 @@ async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     n = len(dataset)
     logger.info("Embedding %d samples → %s", n, out_path)
+
+    if n == 0:
+        arr = np.zeros((0, 0), dtype=np.float32)
+        np.save(str(out_path), arr)
+        logger.info("Saved %s  shape=%s", out_path, arr.shape)
+        return arr
 
     all_embeddings: list[list[float]] = []
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)

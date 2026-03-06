@@ -35,23 +35,27 @@ def _build_dataset(*, limit: int | None = None) -> tuple[Dataset, np.ndarray]:
     wiki_emb = _load_teacher_embeddings(_EMBEDDINGS_DIR / f"wikipedia{suffix}.npy")
 
     cauldron_datasets = preprocess_cauldron(limit=limit)
-    cauldron_embs = []
-    from delta_embed.data.download import CAULDRON_CONFIGS
+    from delta_embed_vl.data.download import CAULDRON_CONFIGS
 
+    all_datasets = [wiki_ds]
+    all_embeddings = [wiki_emb]
     for config, ds in zip(CAULDRON_CONFIGS, cauldron_datasets):
         emb_path = _EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy"
-        cauldron_embs.append(_load_teacher_embeddings(emb_path))
-
-    all_datasets = [wiki_ds] + cauldron_datasets
-    all_embeddings = np.concatenate([wiki_emb] + cauldron_embs, axis=0)
+        emb = _load_teacher_embeddings(emb_path)
+        if len(ds) == 0 or emb.shape[0] == 0:
+            logger.info("Skipping empty cauldron/%s", config)
+            continue
+        all_datasets.append(ds)
+        all_embeddings.append(emb)
 
     combined = concatenate_datasets(all_datasets)
     combined.set_format("python")
+    combined_embeddings = np.concatenate(all_embeddings, axis=0)
 
-    assert len(combined) == len(all_embeddings), (
-        f"Dataset/embedding mismatch: {len(combined)} vs {len(all_embeddings)}"
+    assert len(combined) == len(combined_embeddings), (
+        f"Dataset/embedding mismatch: {len(combined)} vs {len(combined_embeddings)}"
     )
-    return combined, all_embeddings
+    return combined, combined_embeddings
 
 
 def _collate(
