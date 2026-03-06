@@ -259,7 +259,7 @@ wheels = [
 ]
 
 [[package]]
-name = "delta-embed"
+name = "delta-embed-vl"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

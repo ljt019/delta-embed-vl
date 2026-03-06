@@ -84,7 +84,7 @@ _DATASET_REGISTRY = {
 
 
 def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
-    """Load a raw dataset. If limit is set, stream and take only N rows."""
+    """Load a raw dataset. If limit is set, load only the first N rows."""
     if name not in _DATASET_REGISTRY:
         supported_names = ", ".join(sorted(_DATASET_REGISTRY.keys()))
         raise ValueError(f"Unknown dataset name: {name}. Supported: {supported_names}")
@@ -92,8 +92,7 @@ def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
     dataset_id, config, split = _DATASET_REGISTRY[name]
 
     if limit is not None:
-        stream = load_dataset(dataset_id, config, split=split, streaming=True)
-        return Dataset.from_list(list(stream.take(limit)))
+        split = f"{split}[:{limit}]"
 
     return load_dataset(
         dataset_id,
