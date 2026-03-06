@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 from datasets import Dataset
@@ -13,10 +14,12 @@ from delta_embed_vl.data.download import (
     load_raw_cauldron,
     load_raw_wikipedia,
 )
-from delta_embed_vl.data.media import has_usable_image
+from delta_embed_vl.data.media import ImageLike, coerce_image_to_rgb, has_usable_image
 from delta_embed_vl.model.embedding_inputs import (
     EmbeddingInput,
+    count_teacher_processed_tokens,
     count_teacher_prompt_tokens,
+    teacher_processed_token_lengths,
     teacher_prompt_token_limit,
 )
 from delta_embed_vl.progress import ProgressBar
@@ -79,7 +82,11 @@ def _fits_teacher_prompt(text: str) -> bool:
     )
 
 
-def _split_raw_teacher_safe(text: str) -> list[str]:
+def _fits_teacher_processed(sample: EmbeddingInput) -> bool:
+    return count_teacher_processed_tokens(sample) <= teacher_prompt_token_limit()
+
+
+def _split_raw_safe(text: str, *, fits: Callable[[str], bool]) -> list[str]:
     chunks: list[str] = []
     start = 0
     while start < len(text):
@@ -90,7 +97,7 @@ def _split_raw_teacher_safe(text: str) -> list[str]:
         while low <= high:
             mid = (low + high) // 2
             candidate = text[start : start + mid].strip()
-            if candidate and _fits_teacher_prompt(candidate):
+            if candidate and fits(candidate):
                 best = mid
                 low = mid + 1
             else:
@@ -107,40 +114,57 @@ def _split_raw_teacher_safe(text: str) -> list[str]:
     return chunks
 
 
-def _ensure_teacher_safe(text: str) -> list[str]:
-    if _fits_teacher_prompt(text):
+def _split_raw_teacher_safe(text: str) -> list[str]:
+    return _split_raw_safe(text, fits=_fits_teacher_prompt)
+
+
+def _ensure_text_safe(text: str, *, fits: Callable[[str], bool]) -> list[str]:
+    if fits(text):
         return [text]
 
     words = text.split()
     if len(words) <= 1:
-        return _split_raw_teacher_safe(text)
+        return _split_raw_safe(text, fits=fits)
 
     chunks: list[str] = []
     current: list[str] = []
     for word in words:
         if not current:
-            if _fits_teacher_prompt(word):
+            if fits(word):
                 current = [word]
             else:
-                chunks.extend(_split_raw_teacher_safe(word))
+                chunks.extend(_split_raw_safe(word, fits=fits))
             continue
 
         candidate = " ".join([*current, word])
-        if _fits_teacher_prompt(candidate):
+        if fits(candidate):
             current.append(word)
             continue
 
         chunks.append(" ".join(current))
-        if _fits_teacher_prompt(word):
+        if fits(word):
             current = [word]
         else:
-            chunks.extend(_split_raw_teacher_safe(word))
+            chunks.extend(_split_raw_safe(word, fits=fits))
             current = []
 
     if current:
         chunks.append(" ".join(current))
 
     return chunks
+
+
+def _ensure_teacher_safe(text: str) -> list[str]:
+    return _ensure_text_safe(text, fits=_fits_teacher_prompt)
+
+
+def _ensure_multimodal_teacher_safe(text: str, image: ImageLike) -> list[str]:
+    return _ensure_text_safe(
+        text,
+        fits=lambda candidate: _fits_teacher_processed(
+            EmbeddingInput(text=candidate, image=image)
+        ),
+    )
 
 
 def _chunk_text(text: str, *, chunk_chars: int = 1200) -> list[str]:
@@ -205,6 +229,39 @@ def _extract_cauldron_text(conversation: list[dict]) -> str | None:
     return text or None
 
 
+def load_cauldron_embedding_input(
+    raw_dataset: Dataset,
+    row: dict,
+    *,
+    config: str | None = None,
+    row_index: int | None = None,
+) -> EmbeddingInput:
+    text = row.get("text") or None
+    image_index = int(row["image_index"])
+    if image_index < 0:
+        return EmbeddingInput(text=text)
+
+    source_index = int(row["source_index"])
+    source_images = raw_dataset[source_index]["images"]
+    if image_index >= len(source_images):
+        location = f"source={source_index} image={image_index}"
+        if config is not None:
+            location = f"cauldron/{config} {location}"
+        if row_index is not None:
+            location = f"{location} row={row_index}"
+        raise ValueError(f"Image index out of range for {location}.")
+
+    image = coerce_image_to_rgb(source_images[image_index])
+    if image is None:
+        location = f"source={source_index} image={image_index}"
+        if config is not None:
+            location = f"cauldron/{config} {location}"
+        if row_index is not None:
+            location = f"{location} row={row_index}"
+        raise ValueError(f"Could not resolve image for {location}.")
+    return EmbeddingInput(text=text, image=image)
+
+
 def _already_processed(path: Path) -> bool:
     return path.exists() and (
         (path / "dataset_info.json").exists() or (path / _EMPTY_DATASET_MARKER).exists()
@@ -240,6 +297,31 @@ def _chunk_wikipedia_batch(batch: dict[str, list]) -> dict[str, list]:
             rows["text"].append(chunk)
             rows["modality"].append("text")
     return rows
+
+
+def _append_cauldron_row(
+    rows: dict[str, list],
+    *,
+    text: str | None,
+    modality: str,
+    source_index: int,
+    image_index: int,
+) -> None:
+    rows["text"].append(text)
+    rows["modality"].append(modality)
+    rows["source_index"].append(source_index)
+    rows["image_index"].append(image_index)
+
+
+def _batched_processed_lengths(
+    samples: list[EmbeddingInput], *, batch_size: int = 8
+) -> list[int]:
+    lengths: list[int] = []
+    for start in range(0, len(samples), batch_size):
+        lengths.extend(
+            teacher_processed_token_lengths(samples[start : start + batch_size])
+        )
+    return lengths
 
 
 ### Public
@@ -316,6 +398,8 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     processed_examples = 0
 
     skipped_images = 0
+    skipped_overlength = 0
+    split_rows = 0
     emitted_rows = 0
     progress = ProgressBar(
         label=f"cauldron/{config}",
@@ -325,7 +409,12 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     logger.info("cauldron/%s: preprocessing %d examples", config, total_examples)
 
     def _normalize_cauldron_batch(batch: dict[str, list]) -> dict[str, list]:
-        nonlocal emitted_rows, processed_examples, skipped_images
+        nonlocal \
+            emitted_rows, \
+            processed_examples, \
+            skipped_images, \
+            skipped_overlength, \
+            split_rows
         rows: dict[str, list] = {
             "text": [],
             "modality": [],
@@ -333,6 +422,8 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
             "image_index": [],
         }
         batch_start = processed_examples
+        candidate_samples: list[EmbeddingInput] = []
+        candidate_metadata: list[tuple[int, int, str, str | None, ImageLike]] = []
 
         for offset, (conversation, images) in enumerate(
             zip(batch["texts"], batch["images"], strict=False)
@@ -342,10 +433,16 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
             if not images:
                 if text:
-                    rows["text"].append(text)
-                    rows["modality"].append("text")
-                    rows["source_index"].append(source_index)
-                    rows["image_index"].append(-1)
+                    safe_chunks = _ensure_teacher_safe(text)
+                    split_rows += max(0, len(safe_chunks) - 1)
+                    for chunk in safe_chunks:
+                        _append_cauldron_row(
+                            rows,
+                            text=chunk,
+                            modality="text",
+                            source_index=source_index,
+                            image_index=-1,
+                        )
                 continue
 
             for image_index, image in enumerate(images):
@@ -354,16 +451,64 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
                     continue
 
                 modality = "text_image" if text else "image"
-                rows["text"].append(text)
-                rows["modality"].append(modality)
-                rows["source_index"].append(source_index)
-                rows["image_index"].append(image_index)
+                candidate_samples.append(EmbeddingInput(text=text, image=image))
+                candidate_metadata.append(
+                    (source_index, image_index, modality, text, image)
+                )
+
+        if candidate_samples:
+            processed_lengths = _batched_processed_lengths(candidate_samples)
+            for (
+                source_index,
+                image_index,
+                modality,
+                text,
+                image,
+            ), processed_tokens in zip(
+                candidate_metadata,
+                processed_lengths,
+                strict=False,
+            ):
+                if processed_tokens <= teacher_prompt_token_limit():
+                    _append_cauldron_row(
+                        rows,
+                        text=text,
+                        modality=modality,
+                        source_index=source_index,
+                        image_index=image_index,
+                    )
+                    continue
+
+                if modality != "text_image" or not text:
+                    skipped_overlength += 1
+                    logger.warning(
+                        "Skipping overlength cauldron/%s source=%d image=%d processed_tokens=%d",
+                        config,
+                        source_index,
+                        image_index,
+                        processed_tokens,
+                    )
+                    continue
+
+                safe_chunks = _ensure_multimodal_teacher_safe(text, image)
+                split_rows += max(0, len(safe_chunks) - 1)
+                for chunk in safe_chunks:
+                    _append_cauldron_row(
+                        rows,
+                        text=chunk,
+                        modality=modality,
+                        source_index=source_index,
+                        image_index=image_index,
+                    )
 
         processed_examples += len(batch["texts"])
         emitted_rows += len(rows["text"])
         progress.update(
             processed_examples,
-            extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}",
+            extra=(
+                f"rows={emitted_rows:,}, split_rows={split_rows:,}, "
+                f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}"
+            ),
         )
         return rows
 
@@ -373,13 +518,20 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
         batch_size=32,
         remove_columns=raw.column_names,
     )
-    progress.close(extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}")
+    progress.close(
+        extra=(
+            f"rows={emitted_rows:,}, split_rows={split_rows:,}, "
+            f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}"
+        )
+    )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
-        "Processed cauldron/%s: rows=%d skipped_images=%d",
+        "Processed cauldron/%s: rows=%d split_rows=%d skipped_images=%d skipped_overlength=%d",
         config,
         len(ds),
+        split_rows,
         skipped_images,
+        skipped_overlength,
     )
     return ds
 

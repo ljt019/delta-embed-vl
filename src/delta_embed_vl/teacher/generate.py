@@ -15,11 +15,10 @@ from delta_embed_vl.artifacts import versioned_name
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
 from delta_embed_vl.data.media import (
     coerce_image_to_rgb,
-    has_usable_image,
     image_to_data_uri,
 )
 from delta_embed_vl.data.preprocess import (
-    _extract_cauldron_text,
+    load_cauldron_embedding_input,
     preprocess_cauldron_config,
     preprocess_wikipedia,
 )
@@ -73,7 +72,7 @@ def embed_cauldron_config(config: str, *, limit: int | None = None) -> np.ndarra
     out_name = versioned_name(config, limit=limit)
     return asyncio.run(
         _embed_inputs(
-            _iter_cauldron_inputs(raw),
+            _iter_cauldron_inputs(ds, raw, config=config),
             total_rows=len(ds),
             out_path=_EMBEDDINGS_DIR / "cauldron" / f"{out_name}.npy",
             label=f"cauldron/{config}",
@@ -155,20 +154,16 @@ def _iter_dataset_inputs(dataset: Dataset) -> Iterator[EmbeddingInput]:
         yield EmbeddingInput(text=row.get("text") or None)
 
 
-def _iter_cauldron_inputs(raw: Dataset) -> Iterator[EmbeddingInput]:
-    for example in raw:
-        text = _extract_cauldron_text(example["texts"])
-        images = example["images"]
-
-        if not images:
-            if text:
-                yield EmbeddingInput(text=text)
-            continue
-
-        for image in images:
-            if not has_usable_image(image):
-                continue
-            yield EmbeddingInput(text=text, image=image)
+def _iter_cauldron_inputs(
+    dataset: Dataset, raw: Dataset, *, config: str
+) -> Iterator[EmbeddingInput]:
+    for row_index, row in enumerate(dataset):
+        yield load_cauldron_embedding_input(
+            raw,
+            row,
+            config=config,
+            row_index=row_index,
+        )
 
 
 async def _request_embedding(

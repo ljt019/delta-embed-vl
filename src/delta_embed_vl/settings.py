@@ -12,4 +12,4 @@ class Settings(BaseSettings):
     teacher_max_model_len: int = 8192
     teacher_prompt_margin_tokens: int = 256
 
-    artifact_version: str = "qwen3_vl_contract_v1"
+    artifact_version: str = "qwen3_vl_contract_v2"

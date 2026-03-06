@@ -11,8 +11,11 @@ from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
 
 from delta_embed_vl.artifacts import versioned_name
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
-from delta_embed_vl.data.media import coerce_image_to_rgb
-from delta_embed_vl.data.preprocess import preprocess_cauldron, preprocess_wikipedia
+from delta_embed_vl.data.preprocess import (
+    load_cauldron_embedding_input,
+    preprocess_cauldron,
+    preprocess_wikipedia,
+)
 from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
@@ -109,21 +112,13 @@ def _build_sources(
                 raw_dataset = load_raw_cauldron(config, limit=limit)
 
             row = dataset[local_index]
-            text = row["text"] or None
-            image_index = int(row["image_index"])
-            if image_index < 0:
-                return EmbeddingInput(text=text)
-
-            source_index = int(row["source_index"])
             assert raw_dataset is not None
-            image = coerce_image_to_rgb(
-                raw_dataset[source_index]["images"][image_index]
+            return load_cauldron_embedding_input(
+                raw_dataset,
+                row,
+                config=config,
+                row_index=local_index,
             )
-            if image is None:
-                raise ValueError(
-                    f"Could not resolve image for cauldron/{config} row {local_index}."
-                )
-            return EmbeddingInput(text=text, image=image)
 
         return load_example
 

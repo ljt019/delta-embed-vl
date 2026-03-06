@@ -14,6 +14,7 @@ from datasets import Dataset, disable_progress_bars
 
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
 from delta_embed_vl.data.preprocess import (
+    load_cauldron_embedding_input,
     preprocess_cauldron_config,
     preprocess_wikipedia,
 )
@@ -137,6 +138,7 @@ def _percentile(values: list[int], q: float) -> float:
 
 
 def _distribution(values: list[int], *, thresholds: tuple[int, ...]) -> dict[str, Any]:
+    empty_thresholds = {str(limit): {"count": 0, "pct": 0.0} for limit in thresholds}
     if not values:
         return {
             "count": 0,
@@ -146,7 +148,7 @@ def _distribution(values: list[int], *, thresholds: tuple[int, ...]) -> dict[str
             "p95": None,
             "p99": None,
             "max": None,
-            "threshold_exceedances": {},
+            "threshold_exceedances": empty_thresholds,
         }
 
     ordered = sorted(values)
@@ -297,7 +299,30 @@ def _audit_processed_dataset(
     processed_rows = 0
 
     for row in dataset:
-        sample, metadata = sample_builder(row)
+        try:
+            sample, metadata = sample_builder(row)
+        except Exception as exc:
+            errors.append(
+                AuditError(
+                    dataset=label,
+                    modality=str(row.get("modality", "unknown")),
+                    source_index=(
+                        None
+                        if row.get("source_index") is None
+                        else int(row["source_index"])
+                    ),
+                    image_index=(
+                        None
+                        if row.get("image_index") is None
+                        else int(row["image_index"])
+                    ),
+                    error=str(exc),
+                )
+            )
+            processed_rows += 1
+            progress.update(processed_rows, extra=f"errors={len(errors):,}")
+            continue
+
         if sample is None or metadata is None:
             if metadata is not None:
                 dataset_name, modality, source_index, image_index = metadata
@@ -374,21 +399,8 @@ def _audit_cauldron_config(
         source_index = int(row["source_index"])
         image_index = int(row["image_index"])
         modality = row["modality"]
-        image = None
-        if image_index >= 0:
-            source = raw[source_index]
-            images = source["images"]
-            if image_index >= len(images):
-                return None, (
-                    f"cauldron/{config}",
-                    modality,
-                    source_index,
-                    image_index,
-                )
-            image = images[image_index]
-
         return (
-            EmbeddingInput(text=row["text"] or None, image=image),
+            load_cauldron_embedding_input(raw, row, config=config),
             (
                 f"cauldron/{config}",
                 modality,

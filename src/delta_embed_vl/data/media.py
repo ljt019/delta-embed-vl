@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import base64
 import io
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from PIL import Image
@@ -19,14 +20,37 @@ def resolve_image_path(image_path: str | Path) -> Path | None:
     if path.exists():
         return path
 
-    marker = "/downloads/extracted/"
     normalized_path = str(image_path).replace("\\", "/")
+    resolved = _resolve_cached_image_path(normalized_path)
+    if resolved is None:
+        return None
+    return Path(resolved)
+
+
+@lru_cache(maxsize=65536)
+def _resolve_cached_image_path(normalized_path: str) -> str | None:
+    marker = "/downloads/extracted/"
+    suffixes: list[str] = []
+
     if marker in normalized_path:
-        suffix = normalized_path.split(marker, maxsplit=1)[1]
-        matches = _RAW_DATA_DIR.glob(f"**/downloads/extracted/{suffix}")
-        resolved = next(matches, None)
+        suffixes.append(normalized_path.split(marker, maxsplit=1)[1])
+
+    stripped = normalized_path.lstrip("/")
+    if stripped:
+        suffixes.append(stripped)
+
+    parts = [part for part in PurePosixPath(stripped or normalized_path).parts if part]
+    for width in range(min(len(parts), 6), 0, -1):
+        suffixes.append("/".join(parts[-width:]))
+
+    seen: set[str] = set()
+    for suffix in suffixes:
+        if suffix in seen:
+            continue
+        seen.add(suffix)
+        resolved = next(_RAW_DATA_DIR.glob(f"**/{suffix}"), None)
         if resolved is not None and resolved.exists():
-            return resolved
+            return str(resolved)
 
     return None
 
