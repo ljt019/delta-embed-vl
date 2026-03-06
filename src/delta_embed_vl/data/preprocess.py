@@ -168,6 +168,15 @@ def _materialize_image_asset(
     return str(out_path)
 
 
+def _chunk_wikipedia_batch(batch: dict[str, list]) -> dict[str, list]:
+    rows: dict[str, list] = {"text": [], "modality": []}
+    for text in batch["text"]:
+        for chunk in _chunk_text(text):
+            rows["text"].append(chunk)
+            rows["modality"].append("text")
+    return rows
+
+
 ### Public
 
 
@@ -184,14 +193,13 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
             shutil.rmtree(out_path, ignore_errors=True)
 
     raw = load_raw_wikipedia(limit=limit)
-
-    rows = empty_rows.copy()
-    for article in raw:
-        for chunk in _chunk_text(article["text"]):
-            rows["text"].append(chunk)
-            rows["modality"].append("text")
-
-    ds = Dataset.from_dict(rows)
+    ds = raw.map(
+        _chunk_wikipedia_batch,
+        batched=True,
+        batch_size=256,
+        remove_columns=raw.column_names,
+        desc="Chunking wikipedia",
+    )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     return ds
 
@@ -212,34 +220,50 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
     raw = load_raw_cauldron(config, limit=limit)
 
-    rows = empty_rows.copy()
     skipped_images = 0
-    for example_idx, example in enumerate(raw):
-        text = _extract_cauldron_text(example["texts"])
-        images = example["images"]
 
-        if not images:
-            if text:
-                rows["text"].append(text)
-                rows["image"].append(None)
-                rows["modality"].append("text")
-            continue
+    def _normalize_cauldron_batch(
+        batch: dict[str, list], indices: list[int]
+    ) -> dict[str, list]:
+        nonlocal skipped_images
+        rows: dict[str, list] = {"text": [], "image": [], "modality": []}
 
-        for image_idx, image in enumerate(images):
-            image_path = _materialize_image_asset(
-                image,
-                out_path=asset_dir / f"{example_idx:08d}_{image_idx:02d}.png",
-            )
-            if image_path is None:
-                skipped_images += 1
+        for example_idx, conversation, images in zip(
+            indices, batch["texts"], batch["images"], strict=False
+        ):
+            text = _extract_cauldron_text(conversation)
+
+            if not images:
+                if text:
+                    rows["text"].append(text)
+                    rows["image"].append(None)
+                    rows["modality"].append("text")
                 continue
 
-            modality = "text_image" if text else "image"
-            rows["text"].append(text)
-            rows["image"].append(image_path)
-            rows["modality"].append(modality)
+            for image_idx, image in enumerate(images):
+                image_path = _materialize_image_asset(
+                    image,
+                    out_path=asset_dir / f"{example_idx:08d}_{image_idx:02d}.png",
+                )
+                if image_path is None:
+                    skipped_images += 1
+                    continue
 
-    ds = Dataset.from_dict(rows)
+                modality = "text_image" if text else "image"
+                rows["text"].append(text)
+                rows["image"].append(image_path)
+                rows["modality"].append(modality)
+
+        return rows
+
+    ds = raw.map(
+        _normalize_cauldron_batch,
+        batched=True,
+        with_indices=True,
+        batch_size=32,
+        remove_columns=raw.column_names,
+        desc=f"Normalizing cauldron/{config}",
+    )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
         "Processed cauldron/%s: rows=%d skipped_images=%d",

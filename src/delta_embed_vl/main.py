@@ -2,7 +2,6 @@ import argparse
 import logging
 from dataclasses import dataclass
 
-from delta_embed_vl.data.download import download_data
 from delta_embed_vl.data.preprocess import preprocess_data
 from delta_embed_vl.eval.mteb_eval import run_eval
 from delta_embed_vl.teacher.generate import embed_all
@@ -69,10 +68,7 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
 
 
 def prepare_data(*, limit: int | None = None):
-    """Download raw data, preprocess to Arrow, generate teacher embeddings."""
-    logger.info("Downloading raw datasets")
-    download_data(limit=limit)
-
+    """Preprocess to Arrow and generate teacher embeddings."""
     logger.info("Preprocessing datasets")
     preprocess_data(limit=limit)
 

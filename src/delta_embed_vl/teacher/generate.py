@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import numpy as np
 from datasets import Dataset
+from numpy.lib.format import open_memmap
 from PIL import Image
 
 from delta_embed_vl.data.download import CAULDRON_CONFIGS
@@ -69,7 +70,31 @@ def embed_all(*, limit: int | None = None) -> None:
 _EMBEDDINGS_DIR = settings.data_dir / "embeddings"
 _RAW_DATA_DIR = settings.data_dir / "raw"
 _INSTRUCTION = "Represent the user's input."
-_BATCH_SIZE = 1000
+_BATCH_SIZE = 256
+
+
+def _load_cached_embeddings(out_path: Path, *, expected_rows: int) -> np.ndarray | None:
+    if not out_path.exists():
+        return None
+
+    try:
+        cached = np.load(str(out_path), mmap_mode="r")
+    except Exception:
+        logger.warning("Removing corrupt embedding cache at %s", out_path)
+        out_path.unlink(missing_ok=True)
+        return None
+
+    if cached.shape[0] != expected_rows:
+        logger.warning(
+            "Removing stale embedding cache at %s (expected %d rows, got %d)",
+            out_path,
+            expected_rows,
+            cached.shape[0],
+        )
+        out_path.unlink(missing_ok=True)
+        return None
+
+    return cached
 
 
 def _resolve_image_path(image_path: str | Path) -> Path | None:
@@ -178,12 +203,13 @@ async def _request_embedding(
 
 
 async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
-    if out_path.exists():
+    n = len(dataset)
+    cached = _load_cached_embeddings(out_path, expected_rows=n)
+    if cached is not None:
         logger.info("Cached: %s", out_path)
-        return np.load(str(out_path), mmap_mode="r")
+        return cached
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    n = len(dataset)
     logger.info("Embedding %d samples → %s", n, out_path)
 
     if n == 0:
@@ -192,7 +218,9 @@ async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
         logger.info("Saved %s  shape=%s", out_path, arr.shape)
         return arr
 
-    all_embeddings: list[list[float]] = []
+    embedding_memmap: np.memmap | None = None
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.unlink(missing_ok=True)
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -210,10 +238,21 @@ async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
                 for i in range(batch_start, batch_end)
             ]
             results = await asyncio.gather(*tasks)
-            all_embeddings.extend(results)
-            logger.info("  %d / %d", len(all_embeddings), n)
+            batch_array = np.asarray(results, dtype=np.float32)
+            if embedding_memmap is None:
+                embedding_memmap = open_memmap(
+                    str(tmp_path),
+                    mode="w+",
+                    dtype=np.float32,
+                    shape=(n, batch_array.shape[1]),
+                )
+            embedding_memmap[batch_start:batch_end] = batch_array
+            embedding_memmap.flush()
+            logger.info("  %d / %d", batch_end, n)
 
-    arr = np.array(all_embeddings, dtype=np.float32)
-    np.save(str(out_path), arr)
-    logger.info("Saved %s  shape=%s", out_path, arr.shape)
-    return arr
+    if embedding_memmap is None:
+        raise RuntimeError(f"No embeddings were written for dataset at {out_path}")
+
+    tmp_path.replace(out_path)
+    logger.info("Saved %s  shape=%s", out_path, embedding_memmap.shape)
+    return np.load(str(out_path), mmap_mode="r")

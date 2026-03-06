@@ -6,7 +6,7 @@
 import subprocess
 import sys
 
-DEFAULT_GPU_MEMORY_UTILIZATION = "0.4"
+GPU_MEMORY_UTILIZATION = "0.4"
 
 COMMAND = [
     "vllm",
@@ -20,7 +20,7 @@ COMMAND = [
     "--max-model-len",
     "8192",
     "--gpu-memory-utilization",
-    DEFAULT_GPU_MEMORY_UTILIZATION,
+    GPU_MEMORY_UTILIZATION,
 ]
 
 

@@ -1,9 +1,10 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset
 from torch.optim import AdamW
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
@@ -19,6 +20,15 @@ _settings = Settings()
 _EMBEDDINGS_DIR = _settings.data_dir / "embeddings"
 
 
+@dataclass(frozen=True)
+class PreparedSource:
+    name: str
+    dataset: Dataset
+    embeddings: np.ndarray
+    start: int
+    stop: int
+
+
 def _load_teacher_embeddings(path: Path) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(
@@ -27,8 +37,10 @@ def _load_teacher_embeddings(path: Path) -> np.ndarray:
     return np.load(str(path), mmap_mode="r")
 
 
-def _build_dataset(*, limit: int | None = None) -> tuple[Dataset, np.ndarray]:
-    """Load preprocessed data + teacher embeddings, return aligned pair."""
+def _build_sources(
+    *, limit: int | None = None
+) -> tuple[list[PreparedSource], int, int]:
+    """Load processed data and teacher embeddings without concatenating them in RAM."""
     suffix = f"_test{limit}" if limit else ""
 
     wiki_ds = preprocess_wikipedia(limit=limit)
@@ -37,31 +49,56 @@ def _build_dataset(*, limit: int | None = None) -> tuple[Dataset, np.ndarray]:
     cauldron_datasets = preprocess_cauldron(limit=limit)
     from delta_embed_vl.data.download import CAULDRON_CONFIGS
 
-    all_datasets = [wiki_ds]
-    all_embeddings = [wiki_emb]
-    for config, ds in zip(CAULDRON_CONFIGS, cauldron_datasets):
+    sources: list[PreparedSource] = []
+    next_start = 0
+    teacher_dim = int(wiki_emb.shape[1])
+
+    def add_source(name: str, ds: Dataset, emb: np.ndarray) -> None:
+        nonlocal next_start, teacher_dim
+        if len(ds) == 0 or emb.shape[0] == 0:
+            logger.info("Skipping empty %s", name)
+            return
+        if len(ds) != emb.shape[0]:
+            raise ValueError(
+                f"Dataset/embedding mismatch for {name}: {len(ds)} vs {emb.shape[0]}"
+            )
+        if emb.shape[1] != teacher_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch for {name}: expected {teacher_dim}, got {emb.shape[1]}"
+            )
+        sources.append(
+            PreparedSource(
+                name=name,
+                dataset=ds,
+                embeddings=emb,
+                start=next_start,
+                stop=next_start + len(ds),
+            )
+        )
+        next_start += len(ds)
+
+    add_source("wikipedia", wiki_ds, wiki_emb)
+
+    for config, ds in zip(CAULDRON_CONFIGS, cauldron_datasets, strict=False):
         emb_path = _EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy"
         emb = _load_teacher_embeddings(emb_path)
-        if len(ds) == 0 or emb.shape[0] == 0:
-            logger.info("Skipping empty cauldron/%s", config)
-            continue
-        all_datasets.append(ds)
-        all_embeddings.append(emb)
+        add_source(f"cauldron/{config}", ds, emb)
 
-    combined = concatenate_datasets(all_datasets)
-    combined.set_format("python")
-    combined_embeddings = np.concatenate(all_embeddings, axis=0)
+    return sources, next_start, teacher_dim
 
-    assert len(combined) == len(combined_embeddings), (
-        f"Dataset/embedding mismatch: {len(combined)} vs {len(combined_embeddings)}"
-    )
-    return combined, combined_embeddings
+
+def _resolve_source(
+    sources: list[PreparedSource], global_index: int
+) -> tuple[PreparedSource, int]:
+    for source in sources:
+        if global_index < source.stop:
+            return source, global_index - source.start
+    raise IndexError(f"Global index {global_index} out of range")
 
 
 def _collate(
     batch: list[dict],
-    teacher_embeddings: np.ndarray,
-    indices: list[int],
+    teacher_targets: np.ndarray,
     processor: AutoProcessor,
     max_length: int,
 ) -> dict[str, torch.Tensor]:
@@ -75,9 +112,7 @@ def _collate(
         return_tensors="pt",
     )
 
-    teacher_target = torch.from_numpy(
-        np.stack([teacher_embeddings[i] for i in indices])
-    ).float()
+    teacher_target = torch.from_numpy(teacher_targets).float()
 
     return {
         "input_ids": encoded["input_ids"],
@@ -102,9 +137,7 @@ def train(
     logger.info("Device: %s", device)
 
     logger.info("Loading training data + teacher embeddings")
-    dataset, teacher_embeddings = _build_dataset(limit=limit)
-    n = len(dataset)
-    teacher_dim = teacher_embeddings.shape[1]
+    sources, n, teacher_dim = _build_sources(limit=limit)
     logger.info("Training on %d samples for %d epochs", n, epochs)
 
     logger.info("Loading student model")
@@ -114,7 +147,7 @@ def train(
     model.train()
     projection_head.train()
 
-    indices = list(range(n))
+    indices = np.arange(n, dtype=np.int64)
     total_steps = (n * epochs) // (batch_size * grad_accum_steps)
     warmup_steps = int(total_steps * warmup_ratio)
 
@@ -135,10 +168,20 @@ def train(
         for batch_start in range(0, n, batch_size):
             batch_end = min(batch_start + batch_size, n)
             batch_indices = indices[batch_start:batch_end]
-            batch_samples = [dataset[int(i)] for i in batch_indices]
+            batch_samples: list[dict] = []
+            teacher_targets: list[np.ndarray] = []
+            for global_index in batch_indices:
+                source, local_index = _resolve_source(sources, int(global_index))
+                batch_samples.append(source.dataset[local_index])
+                teacher_targets.append(
+                    np.asarray(source.embeddings[local_index], dtype=np.float32)
+                )
 
             batch_data = _collate(
-                batch_samples, teacher_embeddings, batch_indices, processor, max_length
+                batch_samples,
+                np.stack(teacher_targets),
+                processor,
+                max_length,
             )
 
             input_ids = batch_data["input_ids"].to(device)
