@@ -6,6 +6,8 @@
 import subprocess
 import sys
 
+DEFAULT_GPU_MEMORY_UTILIZATION = "0.4"
+
 COMMAND = [
     "vllm",
     "serve",
@@ -17,6 +19,8 @@ COMMAND = [
     "--trust-remote-code",
     "--max-model-len",
     "8192",
+    "--gpu-memory-utilization",
+    DEFAULT_GPU_MEMORY_UTILIZATION,
 ]
 
 
