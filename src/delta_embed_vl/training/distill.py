@@ -9,7 +9,7 @@ from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
 from delta_embed_vl.data.preprocess import preprocess_cauldron, preprocess_wikipedia
 from delta_embed_vl.model.pooling import last_token_pool, normalize
-from delta_embed_vl.model.student import load_student
+from delta_embed_vl.model.student import load_student, save_projection_head
 from delta_embed_vl.settings import Settings
 from delta_embed_vl.training.losses import cosine_distill_loss
 
@@ -101,20 +101,27 @@ def train(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Device: %s", device)
 
-    logger.info("Loading student model")
-    model, processor = load_student(device=device)
-    model.train()
-
     logger.info("Loading training data + teacher embeddings")
     dataset, teacher_embeddings = _build_dataset(limit=limit)
     n = len(dataset)
+    teacher_dim = teacher_embeddings.shape[1]
     logger.info("Training on %d samples for %d epochs", n, epochs)
+
+    logger.info("Loading student model")
+    model, processor, projection_head = load_student(
+        device=device, output_dim=teacher_dim
+    )
+    model.train()
+    projection_head.train()
 
     indices = list(range(n))
     total_steps = (n * epochs) // (batch_size * grad_accum_steps)
     warmup_steps = int(total_steps * warmup_ratio)
 
-    optimizer = AdamW(model.parameters(), lr=lr)
+    optimizer = AdamW(
+        list(model.parameters()) + list(projection_head.parameters()),
+        lr=lr,
+    )
     scheduler = get_cosine_schedule_with_warmup(
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
     )
@@ -139,9 +146,8 @@ def train(
             teacher_target = batch_data["teacher_target"].to(device)
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            student_emb = normalize(
-                last_token_pool(outputs.last_hidden_state, attention_mask)
-            )
+            pooled = last_token_pool(outputs.last_hidden_state, attention_mask)
+            student_emb = normalize(projection_head(pooled).float())
 
             loss = cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
             loss.backward()
@@ -168,5 +174,6 @@ def train(
     out_path = Path(save_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(out_path))
+    save_projection_head(projection_head, out_path)
     processor.save_pretrained(str(out_path))
     logger.info("Saved checkpoint to %s", out_path)

@@ -15,7 +15,11 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
 from delta_embed_vl.model.pooling import last_token_pool, normalize
-from delta_embed_vl.model.student import STUDENT_MODEL_ID, load_student
+from delta_embed_vl.model.student import (
+    STUDENT_MODEL_ID,
+    get_embedding_dim,
+    load_student,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +37,12 @@ class DeltaEmbedEncoder:
         self.model_name = model_name
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model, self.processor = load_student(
+        self.model, self.processor, self.projection_head = load_student(
             model_id=model_name, device=self._device
         )
         self.model.eval()
+        self.projection_head.eval()
+        self.embed_dim = get_embedding_dim(self.model, self.projection_head)
 
     def encode(
         self,
@@ -67,7 +73,7 @@ class DeltaEmbedEncoder:
                 pooled = last_token_pool(
                     outputs.last_hidden_state, encoded["attention_mask"]
                 )
-                emb = normalize(pooled)
+                emb = normalize(self.projection_head(pooled).float())
                 all_embeddings.append(emb.cpu().float())
 
         return torch.cat(all_embeddings, dim=0)
@@ -97,7 +103,7 @@ class DeltaEmbedEncoder:
             n_parameters=None,
             memory_usage_mb=None,
             max_tokens=512,
-            embed_dim=1024,
+            embed_dim=self.embed_dim,
             license=None,
             open_weights=True,
             public_training_code=None,
