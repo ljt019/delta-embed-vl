@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from datasets import Dataset
 from torch.optim import AdamW
-from transformers import AutoProcessor, get_cosine_schedule_with_warmup
+from transformers import PreTrainedTokenizerBase, get_cosine_schedule_with_warmup
 
 from delta_embed_vl.data.preprocess import preprocess_cauldron, preprocess_wikipedia
 from delta_embed_vl.model.pooling import last_token_pool, normalize
@@ -99,12 +99,12 @@ def _resolve_source(
 def _collate(
     batch: list[dict],
     teacher_targets: np.ndarray,
-    processor: AutoProcessor,
+    tokenizer: PreTrainedTokenizerBase,
     max_length: int,
 ) -> dict[str, torch.Tensor]:
     texts = [sample["text"] or "" for sample in batch]
 
-    encoded = processor.tokenizer(
+    encoded = tokenizer(
         texts,
         padding=True,
         truncation=True,
@@ -141,7 +141,7 @@ def train(
     logger.info("Training on %d samples for %d epochs", n, epochs)
 
     logger.info("Loading student model")
-    model, processor, projection_head = load_student(
+    model, tokenizer, projection_head = load_student(
         device=device, output_dim=teacher_dim
     )
     model.train()
@@ -180,7 +180,7 @@ def train(
             batch_data = _collate(
                 batch_samples,
                 np.stack(teacher_targets),
-                processor,
+                tokenizer,
                 max_length,
             )
 
@@ -218,5 +218,5 @@ def train(
     out_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(out_path))
     save_projection_head(projection_head, out_path)
-    processor.save_pretrained(str(out_path))
+    tokenizer.save_pretrained(str(out_path))
     logger.info("Saved checkpoint to %s", out_path)

@@ -252,8 +252,13 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
         nonlocal processed_articles, next_progress_log
         rows = _chunk_wikipedia_batch(batch)
         processed_articles += len(batch["text"])
-        if processed_articles >= next_progress_log or processed_articles == total_articles:
-            logger.info("wikipedia: %d / %d articles", processed_articles, total_articles)
+        if (
+            processed_articles >= next_progress_log
+            or processed_articles == total_articles
+        ):
+            logger.info(
+                "wikipedia: %d / %d articles", processed_articles, total_articles
+            )
             while next_progress_log <= processed_articles:
                 next_progress_log += progress_interval
         return rows
@@ -315,7 +320,10 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
                 rows["modality"].append(modality)
 
         processed_examples += len(batch["texts"])
-        if processed_examples >= next_progress_log or processed_examples == total_examples:
+        if (
+            processed_examples >= next_progress_log
+            or processed_examples == total_examples
+        ):
             logger.info(
                 "cauldron/%s: %d / %d examples",
                 config,

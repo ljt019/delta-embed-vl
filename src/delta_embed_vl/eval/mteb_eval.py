@@ -50,7 +50,7 @@ class DeltaEmbedEncoder:
         self.mteb_name = _as_mteb_model_name(model_name)
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model, self.processor, self.projection_head = load_student(
+        self.model, self.tokenizer, self.projection_head = load_student(
             model_id=model_name, device=self._device
         )
         self.model.eval()
@@ -74,7 +74,7 @@ class DeltaEmbedEncoder:
         with torch.no_grad():
             for i in range(0, len(all_texts), batch_size):
                 batch_texts = all_texts[i : i + batch_size]
-                encoded = self.processor.tokenizer(
+                encoded = self.tokenizer(
                     batch_texts,
                     padding=True,
                     truncation=True,

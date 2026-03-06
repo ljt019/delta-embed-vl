@@ -119,7 +119,7 @@ def _resolve_image_path(image_path: str | Path) -> Path | None:
         return path
 
     marker = "/downloads/extracted/"
-    normalized_path = image_path.replace("\\", "/")
+    normalized_path = str(image_path).replace("\\", "/")
     if marker in normalized_path:
         suffix = normalized_path.split(marker, maxsplit=1)[1]
         matches = _RAW_DATA_DIR.glob(f"**/downloads/extracted/{suffix}")

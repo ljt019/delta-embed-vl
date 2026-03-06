@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import cast
 
 import torch
 import torch.nn as nn
-from transformers import AutoProcessor, Qwen3_5Model
+from transformers import AutoTokenizer, PreTrainedTokenizerBase, Qwen3_5Model
 from transformers.utils import is_flash_attn_2_available
 
 from delta_embed_vl.model.pooling import last_token_pool, normalize
@@ -83,22 +84,26 @@ def load_student(
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     output_dim: int | None = None,
-) -> tuple[Qwen3_5Model, AutoProcessor, nn.Module]:
-    """Load the student backbone and processor."""
-    model_kwargs: dict[str, object] = {"torch_dtype": dtype}
+) -> tuple[Qwen3_5Model, PreTrainedTokenizerBase, nn.Module]:
+    """Load the student backbone and tokenizer."""
     if device.startswith("cuda"):
         attn_implementation = (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         )
-        model_kwargs["attn_implementation"] = attn_implementation
         logger.info("Loading student with %s attention", attn_implementation)
-
-    model = Qwen3_5Model.from_pretrained(
-        model_id,
-        **model_kwargs,
-    ).to(device)
-    processor = AutoProcessor.from_pretrained(model_id)
-    processor.tokenizer.padding_side = "left"
+        model = Qwen3_5Model.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            attn_implementation=attn_implementation,
+        )
+    else:
+        model = Qwen3_5Model.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+        )
+    model = nn.Module.to(model, device=torch.device(device))
+    tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(model_id))
+    tokenizer.padding_side = "left"
     projection_head = _load_projection_head(
         model_id,
         hidden_size=get_backbone_hidden_size(model),
@@ -106,20 +111,20 @@ def load_student(
         dtype=dtype,
         output_dim=output_dim,
     )
-    return model, processor, projection_head
+    return model, tokenizer, projection_head
 
 
 @torch.no_grad()
 def embed(
     model: Qwen3_5Model,
     projection_head: nn.Module,
-    processor: AutoProcessor,
+    tokenizer: PreTrainedTokenizerBase,
     texts: list[str],
     *,
     max_length: int = 512,
 ) -> torch.Tensor:
     """Encode texts into normalized embeddings. For inference / testing."""
-    inputs = processor.tokenizer(
+    inputs = tokenizer(
         texts,
         padding=True,
         truncation=True,
