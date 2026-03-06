@@ -17,10 +17,22 @@ PROJECTION_STATE_FILENAME = "projection_head.pt"
 PROJECTION_CONFIG_FILENAME = "projection_config.json"
 
 
+def get_backbone_hidden_size(model: Qwen3_5Model) -> int:
+    text_config = getattr(model.config, "text_config", None)
+    if text_config is not None and hasattr(text_config, "hidden_size"):
+        return int(text_config.hidden_size)
+
+    hidden_size = getattr(model.config, "hidden_size", None)
+    if hidden_size is not None:
+        return int(hidden_size)
+
+    raise AttributeError("Could not determine student hidden size from model config.")
+
+
 def get_embedding_dim(model: Qwen3_5Model, projection_head: nn.Module) -> int:
     if isinstance(projection_head, nn.Linear):
         return projection_head.out_features
-    return model.config.hidden_size
+    return get_backbone_hidden_size(model)
 
 
 def save_projection_head(projection_head: nn.Module, save_dir: str | Path) -> None:
@@ -89,7 +101,7 @@ def load_student(
     processor.tokenizer.padding_side = "left"
     projection_head = _load_projection_head(
         model_id,
-        hidden_size=model.config.hidden_size,
+        hidden_size=get_backbone_hidden_size(model),
         device=device,
         dtype=dtype,
         output_dim=output_dim,
