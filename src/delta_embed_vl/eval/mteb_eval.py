@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import mteb
@@ -24,6 +25,17 @@ from delta_embed_vl.model.student import (
 logger = logging.getLogger(__name__)
 
 
+def _as_mteb_model_name(model_name: str) -> str:
+    model_path = Path(model_name)
+    if model_path.exists() or "\\" in model_name or model_name.startswith("."):
+        return f"local/{model_path.name}"
+
+    if model_name.count("/") == 1 and not model_name.startswith("/"):
+        return model_name
+
+    return f"local/{model_path.name}"
+
+
 class DeltaEmbedEncoder:
     """MTEB-compatible encoder wrapping our student model."""
 
@@ -35,6 +47,7 @@ class DeltaEmbedEncoder:
         **kwargs: Any,
     ) -> None:
         self.model_name = model_name
+        self.mteb_name = _as_mteb_model_name(model_name)
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model, self.processor, self.projection_head = load_student(
@@ -96,7 +109,7 @@ class DeltaEmbedEncoder:
     def mteb_model_meta(self) -> ModelMeta:
         return ModelMeta(
             loader=None,
-            name="delta-embed",
+            name=self.mteb_name,
             revision=self.revision,
             release_date=None,
             languages=["eng-Latn"],
