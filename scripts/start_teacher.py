@@ -6,7 +6,8 @@
 import subprocess
 import sys
 
-GPU_MEMORY_UTILIZATION = "0.4"
+GPU_MEMORY_UTILIZATION = "0.95"
+DATA_PARALLEL_SIZE = "2"
 
 COMMAND = [
     "vllm",
@@ -19,6 +20,8 @@ COMMAND = [
     "--trust-remote-code",
     "--max-model-len",
     "8192",
+    "--data-parallel-size",
+    DATA_PARALLEL_SIZE,
     "--gpu-memory-utilization",
     GPU_MEMORY_UTILIZATION,
 ]
