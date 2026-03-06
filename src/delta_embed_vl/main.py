@@ -2,6 +2,8 @@ import argparse
 import logging
 from dataclasses import dataclass
 
+from datasets import disable_progress_bars
+
 from delta_embed_vl.data.preprocess import preprocess_data
 from delta_embed_vl.eval.mteb_eval import run_eval
 from delta_embed_vl.teacher.generate import embed_all
@@ -10,6 +12,14 @@ from delta_embed_vl.training.distill import train
 logger = logging.getLogger(__name__)
 
 _LOG_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_NOISY_LOGGERS = (
+    "datasets",
+    "fsspec",
+    "httpcore",
+    "httpx",
+    "huggingface_hub",
+    "urllib3",
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +32,13 @@ class TrainRunArgs:
     max_length: int
     grad_accum_steps: int
     save_dir: str
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format=_LOG_FMT, force=True)
+    disable_progress_bars()
+    for logger_name in _NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def _add_limit_arg(parser: argparse.ArgumentParser) -> None:
@@ -79,7 +96,7 @@ def prepare_data(*, limit: int | None = None):
 
 
 def prepare_data_cli():
-    logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+    _configure_logging()
     prepare_data(limit=_parse_limit())
 
 
@@ -108,7 +125,7 @@ def train_model(
 
 
 def train_model_cli():
-    logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+    _configure_logging()
     args = _parse_train_run_args(include_limit=True)
     train_model(
         limit=args.limit,
@@ -131,12 +148,12 @@ def eval_model_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, default="checkpoints")
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+    _configure_logging()
     eval_model(model_path=args.model_path)
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format=_LOG_FMT)
+    _configure_logging()
     args = _parse_train_run_args(include_limit=True)
     prepare_data(limit=args.limit)
     train_model(

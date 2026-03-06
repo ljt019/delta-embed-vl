@@ -27,10 +27,54 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _MIN_CHUNK_CHARS = 100
 
 
+def _progress_interval(total: int) -> int:
+    return max(1_000, (total + 19) // 20)
+
+
+def _split_oversized_span(text: str, *, max_chars: int) -> list[str]:
+    """Split a long span on whitespace, with hard fallback on raw chars."""
+    if len(text) <= max_chars:
+        return [text]
+
+    words = text.split()
+    if not words:
+        return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_len = 0
+            chunks.extend(
+                word[i : i + max_chars] for i in range(0, len(word), max_chars)
+            )
+            continue
+
+        sep_len = 1 if current else 0
+        if current and current_len + sep_len + len(word) > max_chars:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_len = len(word)
+            continue
+
+        current.append(word)
+        current_len += sep_len + len(word)
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks
+
+
 def _chunk_text(text: str, *, chunk_chars: int = 1200) -> list[str]:
     """Split text into non-overlapping passages, breaking on sentence boundaries.
 
-    chunk_chars is a heuristic target, not a hard cap.
+    chunk_chars is a target and a hard cap.
     """
     text = " ".join(text.split()).strip()
     if not text:
@@ -42,15 +86,16 @@ def _chunk_text(text: str, *, chunk_chars: int = 1200) -> list[str]:
     current_len = 0
 
     for sentence in sentences:
-        sep_len = 1 if current else 0
-        if current and current_len + sep_len + len(sentence) > chunk_chars:
-            chunks.append(" ".join(current))
-            current = []
-            current_len = 0
-            sep_len = 0
+        for sentence_part in _split_oversized_span(sentence, max_chars=chunk_chars):
+            sep_len = 1 if current else 0
+            if current and current_len + sep_len + len(sentence_part) > chunk_chars:
+                chunks.append(" ".join(current))
+                current = []
+                current_len = 0
+                sep_len = 0
 
-        current.append(sentence)
-        current_len += sep_len + len(sentence)
+            current.append(sentence_part)
+            current_len += sep_len + len(sentence_part)
 
     if current:
         tail = " ".join(current)
@@ -188,20 +233,39 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
     empty_rows: dict[str, list] = {"text": [], "modality": []}
     if _already_processed(out_path):
         try:
-            return _load_processed_dataset(out_path, empty_rows=empty_rows)
+            dataset = _load_processed_dataset(out_path, empty_rows=empty_rows)
+            logger.info("wikipedia: cached rows=%d", len(dataset))
+            return dataset
         except Exception:
             logger.warning("Rebuilding corrupt processed cache at %s", out_path)
             shutil.rmtree(out_path, ignore_errors=True)
 
     raw = load_raw_wikipedia(limit=limit)
+    total_articles = len(raw)
+    progress_interval = _progress_interval(total_articles)
+    processed_articles = 0
+    next_progress_log = progress_interval
+
+    logger.info("wikipedia: preprocessing %d articles", total_articles)
+
+    def _chunk_wikipedia_batch_with_progress(batch: dict[str, list]) -> dict[str, list]:
+        nonlocal processed_articles, next_progress_log
+        rows = _chunk_wikipedia_batch(batch)
+        processed_articles += len(batch["text"])
+        if processed_articles >= next_progress_log or processed_articles == total_articles:
+            logger.info("wikipedia: %d / %d articles", processed_articles, total_articles)
+            while next_progress_log <= processed_articles:
+                next_progress_log += progress_interval
+        return rows
+
     ds = raw.map(
-        _chunk_wikipedia_batch,
+        _chunk_wikipedia_batch_with_progress,
         batched=True,
         batch_size=256,
         remove_columns=raw.column_names,
-        desc="Chunking wikipedia",
     )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
+    logger.info("wikipedia: done rows=%d", len(ds))
     return ds
 
 
@@ -212,17 +276,24 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     empty_rows: dict[str, list] = {"text": [], "modality": []}
     if _already_processed(out_path):
         try:
-            return _load_processed_dataset(out_path, empty_rows=empty_rows)
+            dataset = _load_processed_dataset(out_path, empty_rows=empty_rows)
+            logger.info("cauldron/%s: cached rows=%d", config, len(dataset))
+            return dataset
         except Exception:
             logger.warning("Rebuilding corrupt processed cache at %s", out_path)
             shutil.rmtree(out_path, ignore_errors=True)
 
     raw = load_raw_cauldron(config, limit=limit)
+    total_examples = len(raw)
+    progress_interval = _progress_interval(total_examples)
+    processed_examples = 0
+    next_progress_log = progress_interval
 
     skipped_images = 0
+    logger.info("cauldron/%s: preprocessing %d examples", config, total_examples)
 
     def _normalize_cauldron_batch(batch: dict[str, list]) -> dict[str, list]:
-        nonlocal skipped_images
+        nonlocal next_progress_log, processed_examples, skipped_images
         rows: dict[str, list] = {"text": [], "modality": []}
 
         for conversation, images in zip(batch["texts"], batch["images"], strict=False):
@@ -243,6 +314,16 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
                 rows["text"].append(text)
                 rows["modality"].append(modality)
 
+        processed_examples += len(batch["texts"])
+        if processed_examples >= next_progress_log or processed_examples == total_examples:
+            logger.info(
+                "cauldron/%s: %d / %d examples",
+                config,
+                processed_examples,
+                total_examples,
+            )
+            while next_progress_log <= processed_examples:
+                next_progress_log += progress_interval
         return rows
 
     ds = raw.map(
@@ -250,7 +331,6 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
         batched=True,
         batch_size=32,
         remove_columns=raw.column_names,
-        desc=f"Normalizing cauldron/{config}",
     )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(

@@ -45,7 +45,13 @@ def embed_wikipedia(*, limit: int | None = None) -> np.ndarray:
     """Generate teacher embeddings for all Wikipedia chunks."""
     ds = preprocess_wikipedia(limit=limit)
     suffix = f"_test{limit}" if limit else ""
-    return asyncio.run(_embed_dataset(ds, _EMBEDDINGS_DIR / f"wikipedia{suffix}.npy"))
+    return asyncio.run(
+        _embed_dataset(
+            ds,
+            _EMBEDDINGS_DIR / f"wikipedia{suffix}.npy",
+            label="wikipedia",
+        )
+    )
 
 
 def embed_cauldron_config(config: str, *, limit: int | None = None) -> np.ndarray:
@@ -58,6 +64,7 @@ def embed_cauldron_config(config: str, *, limit: int | None = None) -> np.ndarra
             _iter_cauldron_payloads(raw),
             total_rows=len(ds),
             out_path=_EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy",
+            label=f"cauldron/{config}",
         )
     )
 
@@ -66,7 +73,6 @@ def embed_all(*, limit: int | None = None) -> None:
     """Generate teacher embeddings for all datasets."""
     embed_wikipedia(limit=limit)
     for config in CAULDRON_CONFIGS:
-        logger.info("Embedding cauldron/%s", config)
         embed_cauldron_config(config, limit=limit)
 
 
@@ -77,6 +83,10 @@ _EMBEDDINGS_DIR = settings.data_dir / "embeddings"
 _RAW_DATA_DIR = settings.data_dir / "raw"
 _INSTRUCTION = "Represent the user's input."
 _BATCH_SIZE = 256
+
+
+def _progress_interval(total: int) -> int:
+    return max(1_000, (total + 19) // 20)
 
 
 def _load_cached_embeddings(out_path: Path, *, expected_rows: int) -> np.ndarray | None:
@@ -237,7 +247,11 @@ async def _request_embedding(
             f"{settings.teacher_base_url}/embeddings",
             json=payload,
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            response_body = resp.text[:500]
+            raise RuntimeError(
+                f"Teacher embedding request failed with {resp.status_code}: {response_body}"
+            )
         return resp.json()["data"][0]["embedding"]
 
 
@@ -265,30 +279,31 @@ async def _write_payload_batch(
     end_index = start_index + len(batch_array)
     embedding_memmap[start_index:end_index] = batch_array
     embedding_memmap.flush()
-    logger.info("  %d / %d", end_index, total_rows)
     return embedding_memmap, end_index
 
 
-async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
+async def _embed_dataset(dataset: Dataset, out_path: Path, *, label: str) -> np.ndarray:
     n = len(dataset)
     cached = _load_cached_embeddings(out_path, expected_rows=n)
     if cached is not None:
-        logger.info("Cached: %s", out_path)
+        logger.info("%s: cached shape=%s", label, cached.shape)
         return cached
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Embedding %d samples → %s", n, out_path)
+    logger.info("%s: embedding %d samples", label, n)
 
     if n == 0:
         arr = np.zeros((0, 0), dtype=np.float32)
         np.save(str(out_path), arr)
-        logger.info("Saved %s  shape=%s", out_path, arr.shape)
+        logger.info("%s: done shape=%s", label, arr.shape)
         return arr
 
     embedding_memmap: np.memmap | None = None
     tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
     tmp_path.unlink(missing_ok=True)
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)
+    progress_interval = _progress_interval(n)
+    next_progress_log = progress_interval
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         for batch_start in range(0, n, _BATCH_SIZE):
@@ -315,31 +330,34 @@ async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
                 )
             embedding_memmap[batch_start:batch_end] = batch_array
             embedding_memmap.flush()
-            logger.info("  %d / %d", batch_end, n)
+            if batch_end >= next_progress_log or batch_end == n:
+                logger.info("%s: %d / %d", label, batch_end, n)
+                while next_progress_log <= batch_end:
+                    next_progress_log += progress_interval
 
     if embedding_memmap is None:
         raise RuntimeError(f"No embeddings were written for dataset at {out_path}")
 
     tmp_path.replace(out_path)
-    logger.info("Saved %s  shape=%s", out_path, embedding_memmap.shape)
+    logger.info("%s: done shape=%s", label, embedding_memmap.shape)
     return np.load(str(out_path), mmap_mode="r")
 
 
 async def _embed_payloads(
-    payload_iter: Any, *, total_rows: int, out_path: Path
+    payload_iter: Any, *, total_rows: int, out_path: Path, label: str
 ) -> np.ndarray:
     cached = _load_cached_embeddings(out_path, expected_rows=total_rows)
     if cached is not None:
-        logger.info("Cached: %s", out_path)
+        logger.info("%s: cached shape=%s", label, cached.shape)
         return cached
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Embedding %d samples → %s", total_rows, out_path)
+    logger.info("%s: embedding %d samples", label, total_rows)
 
     if total_rows == 0:
         arr = np.zeros((0, 0), dtype=np.float32)
         np.save(str(out_path), arr)
-        logger.info("Saved %s  shape=%s", out_path, arr.shape)
+        logger.info("%s: done shape=%s", label, arr.shape)
         return arr
 
     embedding_memmap: np.memmap | None = None
@@ -347,6 +365,8 @@ async def _embed_payloads(
     tmp_path.unlink(missing_ok=True)
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)
     next_index = 0
+    progress_interval = _progress_interval(total_rows)
+    next_progress_log = progress_interval
     batch_payloads: list[dict] = []
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -364,6 +384,10 @@ async def _embed_payloads(
                 tmp_path=tmp_path,
             )
             batch_payloads = []
+            if next_index >= next_progress_log or next_index == total_rows:
+                logger.info("%s: %d / %d", label, next_index, total_rows)
+                while next_progress_log <= next_index:
+                    next_progress_log += progress_interval
 
         if batch_payloads:
             embedding_memmap, next_index = await _write_payload_batch(
@@ -375,6 +399,7 @@ async def _embed_payloads(
                 total_rows=total_rows,
                 tmp_path=tmp_path,
             )
+            logger.info("%s: %d / %d", label, next_index, total_rows)
 
     if embedding_memmap is None or next_index != total_rows:
         tmp_path.unlink(missing_ok=True)
@@ -383,5 +408,5 @@ async def _embed_payloads(
         )
 
     tmp_path.replace(out_path)
-    logger.info("Saved %s  shape=%s", out_path, embedding_memmap.shape)
+    logger.info("%s: done shape=%s", label, embedding_memmap.shape)
     return np.load(str(out_path), mmap_mode="r")

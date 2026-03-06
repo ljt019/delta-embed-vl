@@ -143,7 +143,7 @@ def run_eval(
 
     encoder = DeltaEmbedEncoder(model_name=model_path)
     mteb_tasks = mteb.get_tasks(tasks=tasks, languages=["eng"])
-    result = mteb.evaluate(encoder, mteb_tasks)
+    result = mteb.evaluate(encoder, mteb_tasks, encode_kwargs={"batch_size": 32})
 
     for task_result in result.task_results:
         logger.info("%s: %s", task_result.task_name, task_result.get_score())
