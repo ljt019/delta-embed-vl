@@ -26,10 +26,10 @@ dependencies = [
 
 
 [project.scripts]
-prepare-data = "delta_embed.main:prepare_data_cli"
-train-model = "delta_embed.main:train_model_cli"
-eval-model = "delta_embed.main:eval_model_cli"
-delta-embed-pipeline = "delta_embed.main:main"
+prepare-data = "delta_embed_vl.main:prepare_data_cli"
+train-model = "delta_embed_vl.main:train_model_cli"
+eval-model = "delta_embed_vl.main:eval_model_cli"
+delta-embed-pipeline = "delta_embed_vl.main:main"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
