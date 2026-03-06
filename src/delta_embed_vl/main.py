@@ -2,11 +2,11 @@ import argparse
 import logging
 from dataclasses import dataclass
 
-from delta_embed.data.download import download_data
-from delta_embed.data.preprocess import preprocess_data
-from delta_embed.eval.mteb_eval import run_eval
-from delta_embed.teacher.generate import embed_all
-from delta_embed.training.distill import train
+from delta_embed_vl.data.download import download_data
+from delta_embed_vl.data.preprocess import preprocess_data
+from delta_embed_vl.eval.mteb_eval import run_eval
+from delta_embed_vl.teacher.generate import embed_all
+from delta_embed_vl.training.distill import train
 
 logger = logging.getLogger(__name__)
 

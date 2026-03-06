@@ -14,8 +14,8 @@ from typing_extensions import Unpack
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
-from delta_embed.model.pooling import last_token_pool, normalize
-from delta_embed.model.student import STUDENT_MODEL_ID, load_student
+from delta_embed_vl.model.pooling import last_token_pool, normalize
+from delta_embed_vl.model.student import STUDENT_MODEL_ID, load_student
 
 logger = logging.getLogger(__name__)
 

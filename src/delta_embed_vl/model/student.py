@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from transformers import AutoProcessor, Qwen3_5Model
 
-from delta_embed.model.pooling import last_token_pool, normalize
+from delta_embed_vl.model.pooling import last_token_pool, normalize
 
 STUDENT_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
 

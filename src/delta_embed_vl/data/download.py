@@ -1,6 +1,6 @@
 from datasets import Dataset, load_dataset
 
-from delta_embed.settings import Settings
+from delta_embed_vl.settings import Settings
 
 ### Public
 

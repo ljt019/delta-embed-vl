@@ -1,17 +1,15 @@
-from __future__ import annotations
-
 import re
 from pathlib import Path
 
 from datasets import Dataset
 
-from delta_embed.data.download import (
+from delta_embed_vl.data.download import (
     CAULDRON_CONFIGS,
     download_data,
     load_raw_cauldron,
     load_raw_wikipedia,
 )
-from delta_embed.settings import Settings
+from delta_embed_vl.settings import Settings
 
 _PROCESSED_DIR = Settings().data_dir / "processed"
 

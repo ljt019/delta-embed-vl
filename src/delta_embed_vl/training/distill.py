@@ -9,11 +9,11 @@ from datasets import Dataset, concatenate_datasets
 from torch.optim import AdamW
 from transformers import AutoProcessor, get_cosine_schedule_with_warmup
 
-from delta_embed.data.preprocess import preprocess_cauldron, preprocess_wikipedia
-from delta_embed.model.pooling import last_token_pool, normalize
-from delta_embed.model.student import load_student
-from delta_embed.settings import Settings
-from delta_embed.training.losses import cosine_distill_loss
+from delta_embed_vl.data.preprocess import preprocess_cauldron, preprocess_wikipedia
+from delta_embed_vl.model.pooling import last_token_pool, normalize
+from delta_embed_vl.model.student import load_student
+from delta_embed_vl.settings import Settings
+from delta_embed_vl.training.losses import cosine_distill_loss
 
 logger = logging.getLogger(__name__)
 
