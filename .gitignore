@@ -9,8 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-data/
-!src/delta_embed/data/
+/data/
 
 .env 
 !.env.example
