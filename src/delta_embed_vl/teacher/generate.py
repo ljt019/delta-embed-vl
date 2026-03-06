@@ -11,8 +11,9 @@ from datasets import Dataset
 from numpy.lib.format import open_memmap
 from PIL import Image
 
-from delta_embed_vl.data.download import CAULDRON_CONFIGS
+from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
 from delta_embed_vl.data.preprocess import (
+    _extract_cauldron_text,
     preprocess_cauldron_config,
     preprocess_wikipedia,
 )
@@ -50,9 +51,14 @@ def embed_wikipedia(*, limit: int | None = None) -> np.ndarray:
 def embed_cauldron_config(config: str, *, limit: int | None = None) -> np.ndarray:
     """Generate teacher embeddings for one Cauldron config."""
     ds = preprocess_cauldron_config(config, limit=limit)
+    raw = load_raw_cauldron(config, limit=limit)
     suffix = f"_test{limit}" if limit else ""
     return asyncio.run(
-        _embed_dataset(ds, _EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy")
+        _embed_payloads(
+            _iter_cauldron_payloads(raw),
+            total_rows=len(ds),
+            out_path=_EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy",
+        )
     )
 
 
@@ -151,6 +157,23 @@ def _coerce_image(
     return None
 
 
+def _has_usable_image(
+    image: Image.Image | dict[str, Any] | str | Path | None,
+) -> bool:
+    if image is None:
+        return False
+    if isinstance(image, Image.Image):
+        return True
+    if isinstance(image, (str, Path)):
+        return _resolve_image_path(image) is not None
+
+    if image.get("bytes") is not None:
+        return True
+
+    image_path = image.get("path")
+    return bool(image_path) and _resolve_image_path(image_path) is not None
+
+
 def _image_to_data_uri(image: Image.Image) -> str:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -188,6 +211,22 @@ def _build_payload(
     }
 
 
+def _iter_cauldron_payloads(raw: Dataset):
+    for example in raw:
+        text = _extract_cauldron_text(example["texts"])
+        images = example["images"]
+
+        if not images:
+            if text:
+                yield _build_payload(text, None)
+            continue
+
+        for image in images:
+            if not _has_usable_image(image):
+                continue
+            yield _build_payload(text, image)
+
+
 async def _request_embedding(
     client: httpx.AsyncClient,
     semaphore: asyncio.Semaphore,
@@ -200,6 +239,34 @@ async def _request_embedding(
         )
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]
+
+
+async def _write_payload_batch(
+    *,
+    client: httpx.AsyncClient,
+    semaphore: asyncio.Semaphore,
+    payloads: list[dict],
+    embedding_memmap: np.memmap | None,
+    start_index: int,
+    total_rows: int,
+    tmp_path: Path,
+) -> tuple[np.memmap, int]:
+    results = await asyncio.gather(
+        *[_request_embedding(client, semaphore, payload) for payload in payloads]
+    )
+    batch_array = np.asarray(results, dtype=np.float32)
+    if embedding_memmap is None:
+        embedding_memmap = open_memmap(
+            str(tmp_path),
+            mode="w+",
+            dtype=np.float32,
+            shape=(total_rows, batch_array.shape[1]),
+        )
+    end_index = start_index + len(batch_array)
+    embedding_memmap[start_index:end_index] = batch_array
+    embedding_memmap.flush()
+    logger.info("  %d / %d", end_index, total_rows)
+    return embedding_memmap, end_index
 
 
 async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
@@ -252,6 +319,68 @@ async def _embed_dataset(dataset: Dataset, out_path: Path) -> np.ndarray:
 
     if embedding_memmap is None:
         raise RuntimeError(f"No embeddings were written for dataset at {out_path}")
+
+    tmp_path.replace(out_path)
+    logger.info("Saved %s  shape=%s", out_path, embedding_memmap.shape)
+    return np.load(str(out_path), mmap_mode="r")
+
+
+async def _embed_payloads(
+    payload_iter: Any, *, total_rows: int, out_path: Path
+) -> np.ndarray:
+    cached = _load_cached_embeddings(out_path, expected_rows=total_rows)
+    if cached is not None:
+        logger.info("Cached: %s", out_path)
+        return cached
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Embedding %d samples → %s", total_rows, out_path)
+
+    if total_rows == 0:
+        arr = np.zeros((0, 0), dtype=np.float32)
+        np.save(str(out_path), arr)
+        logger.info("Saved %s  shape=%s", out_path, arr.shape)
+        return arr
+
+    embedding_memmap: np.memmap | None = None
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp")
+    tmp_path.unlink(missing_ok=True)
+    semaphore = asyncio.Semaphore(settings.teacher_concurrency)
+    next_index = 0
+    batch_payloads: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        for payload in payload_iter:
+            batch_payloads.append(payload)
+            if len(batch_payloads) < _BATCH_SIZE:
+                continue
+            embedding_memmap, next_index = await _write_payload_batch(
+                client=client,
+                semaphore=semaphore,
+                payloads=batch_payloads,
+                embedding_memmap=embedding_memmap,
+                start_index=next_index,
+                total_rows=total_rows,
+                tmp_path=tmp_path,
+            )
+            batch_payloads = []
+
+        if batch_payloads:
+            embedding_memmap, next_index = await _write_payload_batch(
+                client=client,
+                semaphore=semaphore,
+                payloads=batch_payloads,
+                embedding_memmap=embedding_memmap,
+                start_index=next_index,
+                total_rows=total_rows,
+                tmp_path=tmp_path,
+            )
+
+    if embedding_memmap is None or next_index != total_rows:
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Expected to write {total_rows} embeddings to {out_path}, wrote {next_index}"
+        )
 
     tmp_path.replace(out_path)
     logger.info("Saved %s  shape=%s", out_path, embedding_memmap.shape)

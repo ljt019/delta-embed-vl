@@ -19,7 +19,6 @@ from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
 _PROCESSED_DIR = Settings().data_dir / "processed"
-_ASSETS_DIR = _PROCESSED_DIR / "assets"
 _EMPTY_DATASET_MARKER = "_empty_dataset.json"
 
 ### Private
@@ -153,19 +152,21 @@ def _coerce_image_to_rgb(
     return None
 
 
-def _materialize_image_asset(
+def _has_usable_image(
     image: Image.Image | dict[str, Any] | str | Path | None,
-    *,
-    out_path: Path,
-) -> str | None:
-    normalized = _coerce_image_to_rgb(image)
-    if normalized is None:
-        return None
+) -> bool:
+    if image is None:
+        return False
+    if isinstance(image, Image.Image):
+        return True
+    if isinstance(image, (str, Path)):
+        return Path(image).exists()
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if not out_path.exists():
-        normalized.save(out_path, format="PNG")
-    return str(out_path)
+    if image.get("bytes") is not None:
+        return True
+
+    image_path = image.get("path")
+    return bool(image_path) and Path(image_path).exists()
 
 
 def _chunk_wikipedia_batch(batch: dict[str, list]) -> dict[str, list]:
@@ -208,50 +209,38 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     """Convert one Cauldron config into a unified Arrow dataset on disk."""
     suffix = f"_test{limit}" if limit else ""
     out_path = _PROCESSED_DIR / "cauldron" / f"{config}{suffix}"
-    asset_dir = _ASSETS_DIR / "cauldron" / f"{config}{suffix}"
-    empty_rows: dict[str, list] = {"text": [], "image": [], "modality": []}
+    empty_rows: dict[str, list] = {"text": [], "modality": []}
     if _already_processed(out_path):
         try:
             return _load_processed_dataset(out_path, empty_rows=empty_rows)
         except Exception:
             logger.warning("Rebuilding corrupt processed cache at %s", out_path)
             shutil.rmtree(out_path, ignore_errors=True)
-            shutil.rmtree(asset_dir, ignore_errors=True)
 
     raw = load_raw_cauldron(config, limit=limit)
 
     skipped_images = 0
 
-    def _normalize_cauldron_batch(
-        batch: dict[str, list], indices: list[int]
-    ) -> dict[str, list]:
+    def _normalize_cauldron_batch(batch: dict[str, list]) -> dict[str, list]:
         nonlocal skipped_images
-        rows: dict[str, list] = {"text": [], "image": [], "modality": []}
+        rows: dict[str, list] = {"text": [], "modality": []}
 
-        for example_idx, conversation, images in zip(
-            indices, batch["texts"], batch["images"], strict=False
-        ):
+        for conversation, images in zip(batch["texts"], batch["images"], strict=False):
             text = _extract_cauldron_text(conversation)
 
             if not images:
                 if text:
                     rows["text"].append(text)
-                    rows["image"].append(None)
                     rows["modality"].append("text")
                 continue
 
-            for image_idx, image in enumerate(images):
-                image_path = _materialize_image_asset(
-                    image,
-                    out_path=asset_dir / f"{example_idx:08d}_{image_idx:02d}.png",
-                )
-                if image_path is None:
+            for image in images:
+                if not _has_usable_image(image):
                     skipped_images += 1
                     continue
 
                 modality = "text_image" if text else "image"
                 rows["text"].append(text)
-                rows["image"].append(image_path)
                 rows["modality"].append(modality)
 
         return rows
@@ -259,7 +248,6 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     ds = raw.map(
         _normalize_cauldron_batch,
         batched=True,
-        with_indices=True,
         batch_size=32,
         remove_columns=raw.column_names,
         desc=f"Normalizing cauldron/{config}",
