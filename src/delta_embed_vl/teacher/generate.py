@@ -67,8 +67,28 @@ def embed_all(*, limit: int | None = None) -> None:
 
 
 _EMBEDDINGS_DIR = settings.data_dir / "embeddings"
+_RAW_DATA_DIR = settings.data_dir / "raw"
 _INSTRUCTION = "Represent the user's input."
 _BATCH_SIZE = 1000
+
+
+def _resolve_image_path(image_path: str) -> Path:
+    path = Path(image_path)
+    if path.exists():
+        return path
+
+    marker = "/downloads/extracted/"
+    normalized_path = image_path.replace("\\", "/")
+    if marker in normalized_path:
+        suffix = normalized_path.split(marker, maxsplit=1)[1]
+        matches = _RAW_DATA_DIR.glob(f"**/downloads/extracted/{suffix}")
+        resolved = next(matches, None)
+        if resolved is not None and resolved.exists():
+            return resolved
+
+    raise FileNotFoundError(
+        f"Image not found at {image_path}. Expected local cache match under {_RAW_DATA_DIR}."
+    )
 
 
 def _coerce_image(image: Image.Image | dict[str, Any] | None) -> Image.Image | None:
@@ -90,7 +110,7 @@ def _coerce_image(image: Image.Image | dict[str, Any] | None) -> Image.Image | N
 
     image_path = image.get("path")
     if image_path:
-        return Image.open(image_path).convert("RGB")
+        return Image.open(_resolve_image_path(image_path)).convert("RGB")
 
     raise ValueError("Image payload must contain either bytes or path.")
 
