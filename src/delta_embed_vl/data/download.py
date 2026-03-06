@@ -1,4 +1,4 @@
-from datasets import Dataset, load_dataset
+from datasets import Dataset, Image, Sequence, load_dataset
 
 from delta_embed_vl.settings import Settings
 
@@ -94,9 +94,14 @@ def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
     if limit is not None:
         split = f"{split}[:{limit}]"
 
-    return load_dataset(
+    dataset = load_dataset(
         dataset_id,
         config,
         split=split,
         cache_dir=str(_RAW_DATA_DIR / name),
     )
+
+    if name.startswith("cauldron/"):
+        dataset = dataset.cast_column("images", Sequence(Image(decode=False)))
+
+    return dataset

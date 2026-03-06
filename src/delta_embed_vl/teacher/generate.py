@@ -3,6 +3,7 @@ import base64
 import io
 import logging
 from pathlib import Path
+from typing import Any
 
 import httpx
 import numpy as np
@@ -70,14 +71,43 @@ _INSTRUCTION = "Represent the user's input."
 _BATCH_SIZE = 1000
 
 
-def _image_to_data_uri(image: Image.Image) -> str:
+def _coerce_image(image: Image.Image | dict[str, Any] | None) -> Image.Image | None:
+    if image is None:
+        return None
+
+    if isinstance(image, Image.Image):
+        return image
+
+    image_bytes = image.get("bytes")
+    if image_bytes is not None:
+        if isinstance(image_bytes, memoryview):
+            image_bytes = image_bytes.tobytes()
+        elif isinstance(image_bytes, bytearray):
+            image_bytes = bytes(image_bytes)
+        elif isinstance(image_bytes, list):
+            image_bytes = bytes(image_bytes)
+        return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+
+    image_path = image.get("path")
+    if image_path:
+        return Image.open(image_path).convert("RGB")
+
+    raise ValueError("Image payload must contain either bytes or path.")
+
+
+def _image_to_data_uri(image: Image.Image | dict[str, Any]) -> str:
+    image = _coerce_image(image)
+    if image is None:
+        raise ValueError("Expected image payload, got None.")
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
 
-def _build_payload(text: str | None, image: Image.Image | None) -> dict:
+def _build_payload(
+    text: str | None, image: Image.Image | dict[str, Any] | None
+) -> dict:
     """Build a vLLM chat-embedding request body for Qwen3-VL."""
     user_content: list[dict] = []
 
