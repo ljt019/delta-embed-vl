@@ -27,6 +27,7 @@ from delta_embed_vl.model.embedding_inputs import (
     DEFAULT_EMBED_INSTRUCTION,
     EmbeddingInput,
 )
+from delta_embed_vl.progress import ProgressLogger
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -245,8 +246,13 @@ async def _embed_inputs(
     tmp_path.unlink(missing_ok=True)
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)
     next_index = 0
-    progress_interval = _progress_interval(total_rows)
-    next_progress_log = progress_interval
+    progress = ProgressLogger(
+        logger=logger,
+        label=label,
+        total=total_rows,
+        unit="samples",
+        every_items=_progress_interval(total_rows),
+    )
     batch_samples: list[EmbeddingInput] = []
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
@@ -264,10 +270,7 @@ async def _embed_inputs(
                 tmp_path=tmp_path,
             )
             batch_samples = []
-            if next_index >= next_progress_log or next_index == total_rows:
-                logger.info("%s: %d / %d", label, next_index, total_rows)
-                while next_progress_log <= next_index:
-                    next_progress_log += progress_interval
+            progress.maybe_log(next_index)
 
         if batch_samples:
             embedding_memmap, next_index = await _write_input_batch(
@@ -279,7 +282,7 @@ async def _embed_inputs(
                 total_rows=total_rows,
                 tmp_path=tmp_path,
             )
-            logger.info("%s: %d / %d", label, next_index, total_rows)
+            progress.maybe_log(next_index, force=True)
 
     if embedding_memmap is None or next_index != total_rows:
         tmp_path.unlink(missing_ok=True)

@@ -19,6 +19,7 @@ from delta_embed_vl.model.embedding_inputs import (
     count_teacher_prompt_tokens,
     teacher_prompt_token_limit,
 )
+from delta_embed_vl.progress import ProgressLogger
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -263,25 +264,27 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
 
     raw = load_raw_wikipedia(limit=limit)
     total_articles = len(raw)
-    progress_interval = _progress_interval(total_articles)
     processed_articles = 0
-    next_progress_log = progress_interval
+    emitted_rows = 0
+    progress = ProgressLogger(
+        logger=logger,
+        label="wikipedia",
+        total=total_articles,
+        unit="articles",
+        every_items=_progress_interval(total_articles),
+    )
 
     logger.info("wikipedia: preprocessing %d articles", total_articles)
 
     def _chunk_wikipedia_batch_with_progress(batch: dict[str, list]) -> dict[str, list]:
-        nonlocal processed_articles, next_progress_log
+        nonlocal emitted_rows, processed_articles
         rows = _chunk_wikipedia_batch(batch)
         processed_articles += len(batch["text"])
-        if (
-            processed_articles >= next_progress_log
-            or processed_articles == total_articles
-        ):
-            logger.info(
-                "wikipedia: %d / %d articles", processed_articles, total_articles
-            )
-            while next_progress_log <= processed_articles:
-                next_progress_log += progress_interval
+        emitted_rows += len(rows["text"])
+        progress.maybe_log(
+            processed_articles,
+            extra=f"rows={emitted_rows:,}",
+        )
         return rows
 
     ds = raw.map(
@@ -289,6 +292,11 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
         batched=True,
         batch_size=256,
         remove_columns=raw.column_names,
+    )
+    progress.maybe_log(
+        processed_articles,
+        extra=f"rows={emitted_rows:,}",
+        force=True,
     )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info("wikipedia: done rows=%d", len(ds))
@@ -315,15 +323,21 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
     raw = load_raw_cauldron(config, limit=limit)
     total_examples = len(raw)
-    progress_interval = _progress_interval(total_examples)
     processed_examples = 0
-    next_progress_log = progress_interval
 
     skipped_images = 0
+    emitted_rows = 0
+    progress = ProgressLogger(
+        logger=logger,
+        label=f"cauldron/{config}",
+        total=total_examples,
+        unit="examples",
+        every_items=_progress_interval(total_examples),
+    )
     logger.info("cauldron/%s: preprocessing %d examples", config, total_examples)
 
     def _normalize_cauldron_batch(batch: dict[str, list]) -> dict[str, list]:
-        nonlocal next_progress_log, processed_examples, skipped_images
+        nonlocal emitted_rows, processed_examples, skipped_images
         rows: dict[str, list] = {
             "text": [],
             "modality": [],
@@ -358,18 +372,11 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
                 rows["image_index"].append(image_index)
 
         processed_examples += len(batch["texts"])
-        if (
-            processed_examples >= next_progress_log
-            or processed_examples == total_examples
-        ):
-            logger.info(
-                "cauldron/%s: %d / %d examples",
-                config,
-                processed_examples,
-                total_examples,
-            )
-            while next_progress_log <= processed_examples:
-                next_progress_log += progress_interval
+        emitted_rows += len(rows["text"])
+        progress.maybe_log(
+            processed_examples,
+            extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}",
+        )
         return rows
 
     ds = raw.map(
@@ -377,6 +384,11 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
         batched=True,
         batch_size=32,
         remove_columns=raw.column_names,
+    )
+    progress.maybe_log(
+        processed_examples,
+        extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}",
+        force=True,
     )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
