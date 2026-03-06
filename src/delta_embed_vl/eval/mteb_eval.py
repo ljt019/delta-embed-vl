@@ -15,6 +15,7 @@ from typing_extensions import Unpack
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
+from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import (
     STUDENT_MODEL_ID,
@@ -50,7 +51,7 @@ class DeltaEmbedEncoder:
         self.mteb_name = _as_mteb_model_name(model_name)
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model, self.tokenizer, self.projection_head = load_student(
+        self.model, self.processor, self.projection_head = load_student(
             model_id=model_name, device=self._device
         )
         self.model.eval()
@@ -74,12 +75,10 @@ class DeltaEmbedEncoder:
         with torch.no_grad():
             for i in range(0, len(all_texts), batch_size):
                 batch_texts = all_texts[i : i + batch_size]
-                encoded = self.tokenizer(
-                    batch_texts,
-                    padding=True,
-                    truncation=True,
+                encoded = build_student_batch(
+                    self.processor,
+                    [EmbeddingInput(text=text) for text in batch_texts],
                     max_length=512,
-                    return_tensors="pt",
                 ).to(self._device)
 
                 outputs = self.model(**encoded)

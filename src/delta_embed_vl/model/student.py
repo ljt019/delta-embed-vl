@@ -7,9 +7,18 @@ from typing import cast
 
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, PreTrainedTokenizerBase, Qwen3_5Model
+from transformers import (
+    AutoProcessor,
+    Qwen3_5Model,
+    Qwen3VLProcessor,
+)
 from transformers.utils import is_flash_attn_2_available
 
+from delta_embed_vl.model.embedding_inputs import (
+    EmbeddingInput,
+    build_student_batch,
+    get_processor_tokenizer,
+)
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 
 logger = logging.getLogger(__name__)
@@ -84,8 +93,8 @@ def load_student(
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     output_dim: int | None = None,
-) -> tuple[Qwen3_5Model, PreTrainedTokenizerBase, nn.Module]:
-    """Load the student backbone and tokenizer."""
+) -> tuple[Qwen3_5Model, Qwen3VLProcessor, nn.Module]:
+    """Load the student backbone and multimodal processor."""
     if device.startswith("cuda"):
         attn_implementation = (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
@@ -102,7 +111,11 @@ def load_student(
             torch_dtype=dtype,
         )
     model = nn.Module.to(model, device=torch.device(device))
-    tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(model_id))
+    processor = cast(
+        Qwen3VLProcessor,
+        AutoProcessor.from_pretrained(model_id, trust_remote_code=True),
+    )
+    tokenizer = get_processor_tokenizer(processor)
     tokenizer.padding_side = "left"
     projection_head = _load_projection_head(
         model_id,
@@ -111,25 +124,23 @@ def load_student(
         dtype=dtype,
         output_dim=output_dim,
     )
-    return model, tokenizer, projection_head
+    return model, processor, projection_head
 
 
 @torch.no_grad()
 def embed(
     model: Qwen3_5Model,
     projection_head: nn.Module,
-    tokenizer: PreTrainedTokenizerBase,
-    texts: list[str],
+    processor: Qwen3VLProcessor,
+    samples: list[EmbeddingInput],
     *,
     max_length: int = 512,
 ) -> torch.Tensor:
-    """Encode texts into normalized embeddings. For inference / testing."""
-    inputs = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
+    """Encode multimodal samples into normalized embeddings."""
+    inputs = build_student_batch(
+        processor,
+        samples,
         max_length=max_length,
-        return_tensors="pt",
     ).to(model.device)
 
     outputs = model(**inputs)

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,9 +7,13 @@ import numpy as np
 import torch
 from datasets import Dataset
 from torch.optim import AdamW
-from transformers import PreTrainedTokenizerBase, get_cosine_schedule_with_warmup
+from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
 
+from delta_embed_vl.artifacts import versioned_name
+from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
+from delta_embed_vl.data.media import coerce_image_to_rgb
 from delta_embed_vl.data.preprocess import preprocess_cauldron, preprocess_wikipedia
+from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
 from delta_embed_vl.settings import Settings
@@ -23,8 +28,8 @@ _EMBEDDINGS_DIR = _settings.data_dir / "embeddings"
 @dataclass(frozen=True)
 class PreparedSource:
     name: str
-    dataset: Dataset
     embeddings: np.ndarray
+    load_example: Callable[[int], EmbeddingInput]
     start: int
     stop: int
 
@@ -41,26 +46,31 @@ def _build_sources(
     *, limit: int | None = None
 ) -> tuple[list[PreparedSource], int, int]:
     """Load processed data and teacher embeddings without concatenating them in RAM."""
-    suffix = f"_test{limit}" if limit else ""
-
     wiki_ds = preprocess_wikipedia(limit=limit)
-    wiki_emb = _load_teacher_embeddings(_EMBEDDINGS_DIR / f"wikipedia{suffix}.npy")
+    wiki_emb = _load_teacher_embeddings(
+        _EMBEDDINGS_DIR / f"{versioned_name('wikipedia', limit=limit)}.npy"
+    )
 
     cauldron_datasets = preprocess_cauldron(limit=limit)
-    from delta_embed_vl.data.download import CAULDRON_CONFIGS
 
     sources: list[PreparedSource] = []
     next_start = 0
     teacher_dim = int(wiki_emb.shape[1])
 
-    def add_source(name: str, ds: Dataset, emb: np.ndarray) -> None:
+    def add_source(
+        name: str,
+        *,
+        count: int,
+        emb: np.ndarray,
+        load_example: Callable[[int], EmbeddingInput],
+    ) -> None:
         nonlocal next_start, teacher_dim
-        if len(ds) == 0 or emb.shape[0] == 0:
+        if count == 0 or emb.shape[0] == 0:
             logger.info("Skipping empty %s", name)
             return
-        if len(ds) != emb.shape[0]:
+        if count != emb.shape[0]:
             raise ValueError(
-                f"Dataset/embedding mismatch for {name}: {len(ds)} vs {emb.shape[0]}"
+                f"Dataset/embedding mismatch for {name}: {count} vs {emb.shape[0]}"
             )
         if emb.shape[1] != teacher_dim:
             raise ValueError(
@@ -69,20 +79,65 @@ def _build_sources(
         sources.append(
             PreparedSource(
                 name=name,
-                dataset=ds,
                 embeddings=emb,
+                load_example=load_example,
                 start=next_start,
-                stop=next_start + len(ds),
+                stop=next_start + count,
             )
         )
-        next_start += len(ds)
+        next_start += count
 
-    add_source("wikipedia", wiki_ds, wiki_emb)
+    def load_wikipedia_example(local_index: int) -> EmbeddingInput:
+        row = wiki_ds[local_index]
+        return EmbeddingInput(text=row["text"] or None)
+
+    add_source(
+        "wikipedia",
+        count=len(wiki_ds),
+        emb=wiki_emb,
+        load_example=load_wikipedia_example,
+    )
+
+    def make_cauldron_loader(
+        config: str, dataset: Dataset
+    ) -> Callable[[int], EmbeddingInput]:
+        raw_dataset: Dataset | None = None
+
+        def load_example(local_index: int) -> EmbeddingInput:
+            nonlocal raw_dataset
+            if raw_dataset is None:
+                raw_dataset = load_raw_cauldron(config, limit=limit)
+
+            row = dataset[local_index]
+            text = row["text"] or None
+            image_index = int(row["image_index"])
+            if image_index < 0:
+                return EmbeddingInput(text=text)
+
+            source_index = int(row["source_index"])
+            assert raw_dataset is not None
+            image = coerce_image_to_rgb(
+                raw_dataset[source_index]["images"][image_index]
+            )
+            if image is None:
+                raise ValueError(
+                    f"Could not resolve image for cauldron/{config} row {local_index}."
+                )
+            return EmbeddingInput(text=text, image=image)
+
+        return load_example
 
     for config, ds in zip(CAULDRON_CONFIGS, cauldron_datasets, strict=False):
-        emb_path = _EMBEDDINGS_DIR / "cauldron" / f"{config}{suffix}.npy"
+        emb_path = (
+            _EMBEDDINGS_DIR / "cauldron" / f"{versioned_name(config, limit=limit)}.npy"
+        )
         emb = _load_teacher_embeddings(emb_path)
-        add_source(f"cauldron/{config}", ds, emb)
+        add_source(
+            f"cauldron/{config}",
+            count=len(ds),
+            emb=emb,
+            load_example=make_cauldron_loader(config, ds),
+        )
 
     return sources, next_start, teacher_dim
 
@@ -97,28 +152,20 @@ def _resolve_source(
 
 
 def _collate(
-    batch: list[dict],
+    batch: list[EmbeddingInput],
     teacher_targets: np.ndarray,
-    tokenizer: PreTrainedTokenizerBase,
+    processor: Qwen3VLProcessor,
     max_length: int,
 ) -> dict[str, torch.Tensor]:
-    texts = [sample["text"] or "" for sample in batch]
-
-    encoded = tokenizer(
-        texts,
-        padding=True,
-        truncation=True,
+    encoded = build_student_batch(
+        processor,
+        batch,
         max_length=max_length,
-        return_tensors="pt",
     )
-
     teacher_target = torch.from_numpy(teacher_targets).float()
-
-    return {
-        "input_ids": encoded["input_ids"],
-        "attention_mask": encoded["attention_mask"],
-        "teacher_target": teacher_target,
-    }
+    batch_data = {key: value for key, value in encoded.items()}
+    batch_data["teacher_target"] = teacher_target
+    return batch_data
 
 
 def train(
@@ -132,7 +179,7 @@ def train(
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
 ) -> None:
-    """Run cosine distillation training on text data."""
+    """Run cosine distillation training on multimodal data."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Device: %s", device)
 
@@ -141,7 +188,7 @@ def train(
     logger.info("Training on %d samples for %d epochs", n, epochs)
 
     logger.info("Loading student model")
-    model, tokenizer, projection_head = load_student(
+    model, processor, projection_head = load_student(
         device=device, output_dim=teacher_dim
     )
     model.train()
@@ -168,11 +215,11 @@ def train(
         for batch_start in range(0, n, batch_size):
             batch_end = min(batch_start + batch_size, n)
             batch_indices = indices[batch_start:batch_end]
-            batch_samples: list[dict] = []
+            batch_samples: list[EmbeddingInput] = []
             teacher_targets: list[np.ndarray] = []
             for global_index in batch_indices:
                 source, local_index = _resolve_source(sources, int(global_index))
-                batch_samples.append(source.dataset[local_index])
+                batch_samples.append(source.load_example(local_index))
                 teacher_targets.append(
                     np.asarray(source.embeddings[local_index], dtype=np.float32)
                 )
@@ -180,15 +227,19 @@ def train(
             batch_data = _collate(
                 batch_samples,
                 np.stack(teacher_targets),
-                tokenizer,
+                processor,
                 max_length,
             )
 
-            input_ids = batch_data["input_ids"].to(device)
-            attention_mask = batch_data["attention_mask"].to(device)
             teacher_target = batch_data["teacher_target"].to(device)
+            model_inputs = {
+                key: value.to(device)
+                for key, value in batch_data.items()
+                if key != "teacher_target"
+            }
 
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            outputs = model(**model_inputs)
+            attention_mask = model_inputs["attention_mask"]
             pooled = last_token_pool(outputs.last_hidden_state, attention_mask)
             student_emb = normalize(projection_head(pooled).float())
 
@@ -218,5 +269,5 @@ def train(
     out_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(out_path))
     save_projection_head(projection_head, out_path)
-    tokenizer.save_pretrained(str(out_path))
+    processor.save_pretrained(str(out_path))
     logger.info("Saved checkpoint to %s", out_path)
