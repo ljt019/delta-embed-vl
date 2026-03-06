@@ -1,6 +1,8 @@
 import io
+import json
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from delta_embed_vl.settings import Settings
 logger = logging.getLogger(__name__)
 _PROCESSED_DIR = Settings().data_dir / "processed"
 _ASSETS_DIR = _PROCESSED_DIR / "assets"
+_EMPTY_DATASET_MARKER = "_empty_dataset.json"
 
 ### Private
 
@@ -86,7 +89,31 @@ def _extract_cauldron_text(conversation: list[dict]) -> str | None:
 
 
 def _already_processed(path: Path) -> bool:
-    return path.exists() and (path / "dataset_info.json").exists()
+    return path.exists() and (
+        (path / "dataset_info.json").exists() or (path / _EMPTY_DATASET_MARKER).exists()
+    )
+
+
+def _load_processed_dataset(path: Path, *, empty_rows: dict[str, list]) -> Dataset:
+    if (path / _EMPTY_DATASET_MARKER).exists():
+        return Dataset.from_dict(empty_rows)
+    return Dataset.load_from_disk(str(path))
+
+
+def _save_processed_dataset(
+    dataset: Dataset, path: Path, *, empty_rows: dict[str, list]
+) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+
+    if len(dataset) == 0:
+        path.mkdir(parents=True, exist_ok=True)
+        (path / _EMPTY_DATASET_MARKER).write_text(
+            json.dumps({"columns": list(empty_rows.keys())})
+        )
+        return
+
+    dataset.save_to_disk(str(path))
 
 
 def _coerce_image_to_rgb(
@@ -148,19 +175,24 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
     """Chunk Wikipedia articles into text-only Arrow dataset on disk."""
     suffix = f"_test{limit}" if limit else ""
     out_path = _PROCESSED_DIR / f"wikipedia{suffix}"
+    empty_rows: dict[str, list] = {"text": [], "modality": []}
     if _already_processed(out_path):
-        return Dataset.load_from_disk(str(out_path))
+        try:
+            return _load_processed_dataset(out_path, empty_rows=empty_rows)
+        except Exception:
+            logger.warning("Rebuilding corrupt processed cache at %s", out_path)
+            shutil.rmtree(out_path, ignore_errors=True)
 
     raw = load_raw_wikipedia(limit=limit)
 
-    rows: dict[str, list] = {"text": [], "modality": []}
+    rows = empty_rows.copy()
     for article in raw:
         for chunk in _chunk_text(article["text"]):
             rows["text"].append(chunk)
             rows["modality"].append("text")
 
     ds = Dataset.from_dict(rows)
-    ds.save_to_disk(str(out_path))
+    _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     return ds
 
 
@@ -169,12 +201,18 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     suffix = f"_test{limit}" if limit else ""
     out_path = _PROCESSED_DIR / "cauldron" / f"{config}{suffix}"
     asset_dir = _ASSETS_DIR / "cauldron" / f"{config}{suffix}"
+    empty_rows: dict[str, list] = {"text": [], "image": [], "modality": []}
     if _already_processed(out_path):
-        return Dataset.load_from_disk(str(out_path))
+        try:
+            return _load_processed_dataset(out_path, empty_rows=empty_rows)
+        except Exception:
+            logger.warning("Rebuilding corrupt processed cache at %s", out_path)
+            shutil.rmtree(out_path, ignore_errors=True)
+            shutil.rmtree(asset_dir, ignore_errors=True)
 
     raw = load_raw_cauldron(config, limit=limit)
 
-    rows: dict[str, list] = {"text": [], "image": [], "modality": []}
+    rows = empty_rows.copy()
     skipped_images = 0
     for example_idx, example in enumerate(raw):
         text = _extract_cauldron_text(example["texts"])
@@ -202,7 +240,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
             rows["modality"].append(modality)
 
     ds = Dataset.from_dict(rows)
-    ds.save_to_disk(str(out_path))
+    _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
         "Processed cauldron/%s: rows=%d skipped_images=%d",
         config,
