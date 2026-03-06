@@ -27,7 +27,7 @@ from delta_embed_vl.model.embedding_inputs import (
     DEFAULT_EMBED_INSTRUCTION,
     EmbeddingInput,
 )
-from delta_embed_vl.progress import ProgressLogger
+from delta_embed_vl.progress import ProgressBar
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -86,10 +86,6 @@ def embed_all(*, limit: int | None = None) -> None:
     embed_wikipedia(limit=limit)
     for config in CAULDRON_CONFIGS:
         embed_cauldron_config(config, limit=limit)
-
-
-def _progress_interval(total: int) -> int:
-    return max(1_000, (total + 19) // 20)
 
 
 def _load_cached_embeddings(out_path: Path, *, expected_rows: int) -> np.ndarray | None:
@@ -246,12 +242,10 @@ async def _embed_inputs(
     tmp_path.unlink(missing_ok=True)
     semaphore = asyncio.Semaphore(settings.teacher_concurrency)
     next_index = 0
-    progress = ProgressLogger(
-        logger=logger,
+    progress = ProgressBar(
         label=label,
         total=total_rows,
         unit="samples",
-        every_items=_progress_interval(total_rows),
     )
     batch_samples: list[EmbeddingInput] = []
 
@@ -270,7 +264,7 @@ async def _embed_inputs(
                 tmp_path=tmp_path,
             )
             batch_samples = []
-            progress.maybe_log(next_index)
+            progress.update(next_index)
 
         if batch_samples:
             embedding_memmap, next_index = await _write_input_batch(
@@ -282,7 +276,7 @@ async def _embed_inputs(
                 total_rows=total_rows,
                 tmp_path=tmp_path,
             )
-            progress.maybe_log(next_index, force=True)
+            progress.update(next_index)
 
     if embedding_memmap is None or next_index != total_rows:
         tmp_path.unlink(missing_ok=True)
@@ -290,6 +284,7 @@ async def _embed_inputs(
             f"Expected to write {total_rows} embeddings to {out_path}, wrote {next_index}"
         )
 
+    progress.close()
     tmp_path.replace(out_path)
     logger.info("%s: done shape=%s", label, embedding_memmap.shape)
     return np.load(str(out_path), mmap_mode="r")

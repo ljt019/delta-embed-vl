@@ -19,7 +19,7 @@ from delta_embed_vl.model.embedding_inputs import (
     count_teacher_prompt_tokens,
     teacher_prompt_token_limit,
 )
-from delta_embed_vl.progress import ProgressLogger
+from delta_embed_vl.progress import ProgressBar
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -30,10 +30,6 @@ _EMPTY_DATASET_MARKER = "_empty_dataset.json"
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _MIN_CHUNK_CHARS = 100
-
-
-def _progress_interval(total: int) -> int:
-    return max(1_000, (total + 19) // 20)
 
 
 def _split_oversized_span(text: str, *, max_chars: int) -> list[str]:
@@ -266,12 +262,10 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
     total_articles = len(raw)
     processed_articles = 0
     emitted_rows = 0
-    progress = ProgressLogger(
-        logger=logger,
+    progress = ProgressBar(
         label="wikipedia",
         total=total_articles,
         unit="articles",
-        every_items=_progress_interval(total_articles),
     )
 
     logger.info("wikipedia: preprocessing %d articles", total_articles)
@@ -281,7 +275,7 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
         rows = _chunk_wikipedia_batch(batch)
         processed_articles += len(batch["text"])
         emitted_rows += len(rows["text"])
-        progress.maybe_log(
+        progress.update(
             processed_articles,
             extra=f"rows={emitted_rows:,}",
         )
@@ -293,11 +287,7 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
         batch_size=256,
         remove_columns=raw.column_names,
     )
-    progress.maybe_log(
-        processed_articles,
-        extra=f"rows={emitted_rows:,}",
-        force=True,
-    )
+    progress.close(extra=f"rows={emitted_rows:,}")
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info("wikipedia: done rows=%d", len(ds))
     return ds
@@ -327,12 +317,10 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
     skipped_images = 0
     emitted_rows = 0
-    progress = ProgressLogger(
-        logger=logger,
+    progress = ProgressBar(
         label=f"cauldron/{config}",
         total=total_examples,
         unit="examples",
-        every_items=_progress_interval(total_examples),
     )
     logger.info("cauldron/%s: preprocessing %d examples", config, total_examples)
 
@@ -373,7 +361,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
         processed_examples += len(batch["texts"])
         emitted_rows += len(rows["text"])
-        progress.maybe_log(
+        progress.update(
             processed_examples,
             extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}",
         )
@@ -385,11 +373,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
         batch_size=32,
         remove_columns=raw.column_names,
     )
-    progress.maybe_log(
-        processed_examples,
-        extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}",
-        force=True,
-    )
+    progress.close(extra=f"rows={emitted_rows:,}, skipped_images={skipped_images:,}")
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
         "Processed cauldron/%s: rows=%d skipped_images=%d",

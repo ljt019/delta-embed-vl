@@ -150,16 +150,19 @@ def teacher_text_token_budget() -> int:
     return budget
 
 
-def build_student_batch(
+def _build_processor_batch(
     processor: Qwen3VLProcessor,
     samples: list[EmbeddingInput],
     *,
-    max_length: int,
+    padding: bool,
+    truncation: bool,
+    max_length: int | None = None,
 ) -> BatchFeature:
+    tokenizer = get_teacher_tokenizer()
     resolved_inputs = [_resolve_input(sample) for sample in samples]
     prompts = [
         _render_prompt(
-            get_teacher_tokenizer(),
+            tokenizer,
             text=text,
             image=image,
             instruction=instruction,
@@ -172,11 +175,57 @@ def build_student_batch(
     processor_kwargs: dict[str, Any] = {
         "text": prompts,
         "return_tensors": "pt",
-        "padding": True,
-        "truncation": True,
-        "max_length": max_length,
+        "padding": padding,
+        "truncation": truncation,
     }
+    if max_length is not None:
+        processor_kwargs["max_length"] = max_length
     if any(image_inputs):
         processor_kwargs["images"] = image_inputs
 
     return processor(**processor_kwargs)
+
+
+def teacher_processed_token_lengths(samples: list[EmbeddingInput]) -> list[int]:
+    if not samples:
+        return []
+
+    features = _build_processor_batch(
+        get_teacher_processor(),
+        samples,
+        padding=True,
+        truncation=False,
+    )
+    attention_mask = features.get("attention_mask")
+    if attention_mask is not None:
+        rows = cast(list[list[int]], attention_mask.tolist())
+        return [sum(row) for row in rows]
+
+    input_ids = features["input_ids"]
+    rows = cast(list[list[int]], input_ids.tolist())
+    pad_token_id = get_teacher_tokenizer().pad_token_id
+    if pad_token_id is None:
+        return [len(row) for row in rows]
+    return [sum(1 for token in row if token != pad_token_id) for row in rows]
+
+
+def count_teacher_processed_tokens(sample: EmbeddingInput) -> int:
+    lengths = teacher_processed_token_lengths([sample])
+    if not lengths:
+        raise ValueError("Expected at least one processed token length.")
+    return lengths[0]
+
+
+def build_student_batch(
+    processor: Qwen3VLProcessor,
+    samples: list[EmbeddingInput],
+    *,
+    max_length: int,
+) -> BatchFeature:
+    return _build_processor_batch(
+        processor,
+        samples,
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
