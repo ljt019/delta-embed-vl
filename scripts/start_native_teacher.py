@@ -345,7 +345,7 @@ def create_app(config: ServerConfig) -> Any:
         return PlainTextResponse(render_metrics(app), media_type="text/plain")
 
     @app.post("/v1/embeddings")
-    async def embeddings(request: Any) -> dict[str, object]:
+    async def embeddings(request: Request) -> dict[str, object]:
         app.state.counters["requests_total"] += 1
         app.state.counters["requests_in_flight"] += 1
         try:
