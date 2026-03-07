@@ -33,7 +33,7 @@ uv run delta-embed-pipeline \
   --teacher-batch-size 8 \
   --batch-size 8 \
   --grad-accum-steps 4 \
-  --max-length 512 \
+  --max-length 8192 \
   --epochs 3
 ```
 
@@ -59,6 +59,7 @@ uv run train-model \
   --epochs 1 \
   --batch-size 2 \
   --teacher-batch-size 2 \
+  --max-length 8192 \
   --teacher-device cuda:0 \
   --student-device cuda:1
 ```
