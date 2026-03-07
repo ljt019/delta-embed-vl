@@ -7,6 +7,7 @@ from delta_embed_vl.settings import Settings
 WIKIPEDIA_ID = "wikimedia/wikipedia"
 CAULDRON_ID = "HuggingFaceM4/the_cauldron"
 
+WIKIPEDIA_CONFIG = "20231101.en"
 CAULDRON_CONFIGS = [
     # General VQA
     "vqav2",  # 83k images, open-ended questions on COCO photos | CC BY 4.0
@@ -14,7 +15,6 @@ CAULDRON_CONFIGS = [
     "visual7w",  # 14k images, grounded QA with spatial reasoning | CC BY 4.0
     "aokvqa",  # 17k images, QA requiring outside knowledge | CC BY 4.0
     "tallyqa",  # 99k images, counting questions | Apache 2.0
-    "okvqa",  # 9k images, knowledge-based visual QA | CC BY 4.0
     "vqarad",  # 313 images, radiology/medical visual QA | CC0 1.0
     "vsr",  # 2k images, visual spatial relationship verification | CC BY 4.0
     # Captioning
@@ -75,7 +75,7 @@ def load_raw_cauldron(config: str, *, limit: int | None = None) -> Dataset:
 _RAW_DATA_DIR = Settings().data_dir / "raw"
 
 _DATASET_REGISTRY = {
-    "wikipedia": ("wikimedia/wikipedia", "20231101.en", "train"),
+    "wikipedia": ("wikimedia/wikipedia", WIKIPEDIA_CONFIG, "train"),
     **{
         f"cauldron/{config}": ("HuggingFaceM4/the_cauldron", config, "train")
         for config in CAULDRON_CONFIGS

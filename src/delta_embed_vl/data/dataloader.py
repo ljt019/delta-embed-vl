@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import torch
 from datasets import Dataset, concatenate_datasets
 from torch.utils.data import DataLoader
