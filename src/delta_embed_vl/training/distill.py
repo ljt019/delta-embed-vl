@@ -17,7 +17,11 @@ from delta_embed_vl.data.preprocess import (
     preprocess_cauldron,
     preprocess_wikipedia,
 )
-from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
+from delta_embed_vl.model.embedding_inputs import (
+    EmbeddingInput,
+    build_student_batch,
+    is_student_overlength_error,
+)
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
 from delta_embed_vl.model.teacher import TeacherEmbedder, load_teacher
@@ -50,11 +54,16 @@ def _auto_student_device() -> str:
 
 
 def _build_sources(
-    *, limit: int | None = None
+    *,
+    limit: int | None = None,
+    max_length: int = 8192,
 ) -> tuple[list[PreparedSource], int]:
     """Load processed data and resolve each global index back to an example."""
     wiki_ds = preprocess_wikipedia(limit=limit)
-    cauldron_datasets = preprocess_cauldron(limit=limit)
+    cauldron_datasets = preprocess_cauldron(
+        limit=limit,
+        student_max_length=max_length,
+    )
 
     sources: list[PreparedSource] = []
     next_start = 0
@@ -142,6 +151,43 @@ def _collate(
     return {key: value for key, value in encoded.items()}
 
 
+def _summarize_origins(origins: list[str]) -> str:
+    unique_origins = sorted(set(origins))
+    if len(unique_origins) <= 3:
+        return ", ".join(unique_origins)
+    preview = ", ".join(unique_origins[:3])
+    return f"{preview}, +{len(unique_origins) - 3} more"
+
+
+def _collate_with_fallback(
+    batch: list[EmbeddingInput],
+    origins: list[str],
+    processor: Qwen3VLProcessor,
+    max_length: int,
+) -> tuple[list[EmbeddingInput], dict[str, torch.Tensor] | None, list[str]]:
+    try:
+        return batch, _collate(batch, processor, max_length), []
+    except ValueError as exc:
+        if not is_student_overlength_error(exc):
+            raise
+
+    valid_samples: list[EmbeddingInput] = []
+    skipped_origins: list[str] = []
+    for sample, origin in zip(batch, origins, strict=False):
+        try:
+            _collate([sample], processor, max_length)
+        except ValueError as sample_exc:
+            if not is_student_overlength_error(sample_exc):
+                raise
+            skipped_origins.append(origin)
+            continue
+        valid_samples.append(sample)
+
+    if not valid_samples:
+        return [], None, skipped_origins
+    return valid_samples, _collate(valid_samples, processor, max_length), skipped_origins
+
+
 def _embed_teacher_targets(
     teacher: TeacherEmbedder,
     batch: list[EmbeddingInput],
@@ -195,7 +241,7 @@ def train(
     )
 
     logger.info("Loading training data")
-    sources, n = _build_sources(limit=limit)
+    sources, n = _build_sources(limit=limit, max_length=max_length)
     if n == 0:
         raise ValueError("No training samples found.")
     logger.info("Training on %d samples for %d epochs", n, epochs)
@@ -226,27 +272,61 @@ def train(
 
     global_step = 0
     optimizer.zero_grad(set_to_none=True)
+    total_skipped_overlength_samples = 0
+    total_skipped_overlength_batches = 0
     for epoch in range(epochs):
         np.random.shuffle(indices)
         epoch_loss = 0.0
         num_batches = 0
         epoch_start_s = time.monotonic()
         last_progress_log_s = epoch_start_s
+        skipped_overlength_samples = 0
+        skipped_overlength_batches = 0
 
         for batch_start in range(0, n, batch_size):
             batch_start_s = time.monotonic()
             batch_end = min(batch_start + batch_size, n)
+            batch_ordinal = (batch_start // batch_size) + 1
             batch_indices = indices[batch_start:batch_end]
             batch_samples: list[EmbeddingInput] = []
+            batch_origins: list[str] = []
             for global_index in batch_indices:
                 source, local_index = _resolve_source(sources, int(global_index))
                 batch_samples.append(source.load_example(local_index))
+                batch_origins.append(source.name)
 
-            batch_data = _collate(
+            batch_samples, batch_data, skipped_origins = _collate_with_fallback(
                 batch_samples,
+                batch_origins,
                 processor,
                 max_length,
             )
+            if skipped_origins:
+                skipped_count = len(skipped_origins)
+                skipped_overlength_samples += skipped_count
+                total_skipped_overlength_samples += skipped_count
+                if batch_data is None:
+                    skipped_overlength_batches += 1
+                    total_skipped_overlength_batches += 1
+                    logger.warning(
+                        "Skipping batch %d/%d after all %d samples exceeded student max_length=%d (%s)",
+                        batch_ordinal,
+                        batches_per_epoch,
+                        skipped_count,
+                        max_length,
+                        _summarize_origins(skipped_origins),
+                    )
+                    continue
+                logger.warning(
+                    "Recovered batch %d/%d by skipping %d student-overlength samples; kept=%d (%s)",
+                    batch_ordinal,
+                    batches_per_epoch,
+                    skipped_count,
+                    len(batch_samples),
+                    _summarize_origins(skipped_origins),
+                )
+            if batch_data is None:
+                continue
             teacher_target = _embed_teacher_targets(
                 teacher,
                 batch_samples,
@@ -301,12 +381,14 @@ def train(
 
         avg_loss = epoch_loss / max(num_batches, 1)
         logger.info(
-            "Epoch %d/%d  loss=%.6f  lr=%.2e  steps=%d",
+            "Epoch %d/%d  loss=%.6f  lr=%.2e  steps=%d  skipped_overlength_samples=%d  skipped_overlength_batches=%d",
             epoch + 1,
             epochs,
             avg_loss,
             scheduler.get_last_lr()[0],
             global_step,
+            skipped_overlength_samples,
+            skipped_overlength_batches,
         )
 
     out_path = Path(save_dir)
@@ -314,4 +396,9 @@ def train(
     model.save_pretrained(str(out_path))
     save_projection_head(projection_head, out_path)
     processor.save_pretrained(str(out_path))
+    logger.info(
+        "Training done: skipped_overlength_samples=%d skipped_overlength_batches=%d",
+        total_skipped_overlength_samples,
+        total_skipped_overlength_batches,
+    )
     logger.info("Saved checkpoint to %s", out_path)

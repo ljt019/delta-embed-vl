@@ -95,10 +95,10 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
     )
 
 
-def prepare_data(*, limit: int | None = None):
+def prepare_data(*, limit: int | None = None, max_length: int = 8192):
     """Preprocess datasets to Arrow caches."""
     logger.info("Preprocessing datasets")
-    preprocess_data(limit=limit)
+    preprocess_data(limit=limit, student_max_length=max_length)
 
     logger.info("Data preparation complete")
 
@@ -173,7 +173,7 @@ def eval_model_cli():
 def main():
     _configure_logging()
     args = _parse_train_run_args(include_limit=True)
-    prepare_data(limit=args.limit)
+    prepare_data(limit=args.limit, max_length=args.max_length)
     train_model(
         limit=args.limit,
         epochs=args.epochs,

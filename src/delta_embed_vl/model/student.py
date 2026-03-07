@@ -20,9 +20,10 @@ from delta_embed_vl.model.embedding_inputs import (
     get_processor_tokenizer,
 )
 from delta_embed_vl.model.pooling import last_token_pool, normalize
+from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-STUDENT_MODEL_ID = "Qwen/Qwen3.5-0.8B-Base"
+STUDENT_MODEL_ID = Settings().student_model
 PROJECTION_STATE_FILENAME = "projection_head.pt"
 PROJECTION_CONFIG_FILENAME = "projection_config.json"
 

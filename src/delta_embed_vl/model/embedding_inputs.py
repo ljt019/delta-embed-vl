@@ -13,6 +13,10 @@ from delta_embed_vl.data.media import ImageLike, coerce_image_to_rgb
 from delta_embed_vl.settings import Settings
 
 _settings = Settings()
+_STUDENT_MULTIMODAL_MISMATCH = "Mismatch in `image` token count"
+_STUDENT_OVERLENGTH_MESSAGE = (
+    "Student batch exceeds the configured max_length after multimodal token expansion."
+)
 
 DEFAULT_EMBED_INSTRUCTION = "Represent the user's input."
 
@@ -35,6 +39,20 @@ def get_teacher_processor() -> Qwen3VLProcessor:
     )
     tokenizer = get_processor_tokenizer(processor)
     tokenizer.padding_side = "right"
+    return processor
+
+
+@lru_cache
+def get_student_processor() -> Qwen3VLProcessor:
+    processor = cast(
+        Qwen3VLProcessor,
+        AutoProcessor.from_pretrained(
+            _settings.student_model,
+            trust_remote_code=True,
+        ),
+    )
+    tokenizer = get_processor_tokenizer(processor)
+    tokenizer.padding_side = "left"
     return processor
 
 
@@ -219,6 +237,75 @@ def count_teacher_processed_tokens(sample: EmbeddingInput) -> int:
     return lengths[0]
 
 
+def is_student_overlength_error(exc: BaseException) -> bool:
+    return isinstance(exc, ValueError) and (
+        _STUDENT_MULTIMODAL_MISMATCH in str(exc)
+        or _STUDENT_OVERLENGTH_MESSAGE in str(exc)
+    )
+
+
+def sample_fits_student(
+    processor: Qwen3VLProcessor,
+    sample: EmbeddingInput,
+    *,
+    max_length: int,
+) -> bool:
+    try:
+        build_student_batch(processor, [sample], max_length=max_length)
+    except ValueError as exc:
+        if not is_student_overlength_error(exc):
+            raise
+        return False
+    return True
+
+
+def _student_batch_fit_flags(
+    processor: Qwen3VLProcessor,
+    samples: list[EmbeddingInput],
+    *,
+    max_length: int,
+) -> list[bool]:
+    if not samples:
+        return []
+    try:
+        build_student_batch(processor, samples, max_length=max_length)
+    except ValueError as exc:
+        if not is_student_overlength_error(exc):
+            raise
+        if len(samples) == 1:
+            return [False]
+        midpoint = len(samples) // 2
+        return _student_batch_fit_flags(
+            processor,
+            samples[:midpoint],
+            max_length=max_length,
+        ) + _student_batch_fit_flags(
+            processor,
+            samples[midpoint:],
+            max_length=max_length,
+        )
+    return [True] * len(samples)
+
+
+def student_batch_fit_flags(
+    processor: Qwen3VLProcessor,
+    samples: list[EmbeddingInput],
+    *,
+    max_length: int,
+    batch_size: int = 8,
+) -> list[bool]:
+    fits: list[bool] = []
+    for start in range(0, len(samples), batch_size):
+        fits.extend(
+            _student_batch_fit_flags(
+                processor,
+                samples[start : start + batch_size],
+                max_length=max_length,
+            )
+        )
+    return fits
+
+
 def build_student_batch(
     processor: Qwen3VLProcessor,
     samples: list[EmbeddingInput],
@@ -234,10 +321,10 @@ def build_student_batch(
             max_length=max_length,
         )
     except ValueError as exc:
-        if "Mismatch in `image` token count" not in str(exc):
+        if not is_student_overlength_error(exc):
             raise
         raise ValueError(
-            "Student batch exceeds the configured max_length after multimodal token expansion. "
+            f"{_STUDENT_OVERLENGTH_MESSAGE} "
             f"Increase --max-length (current: {max_length}; try 2048 or 4096)."
         ) from exc
 

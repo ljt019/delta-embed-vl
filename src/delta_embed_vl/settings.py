@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
 
     teacher_model: str = "Qwen/Qwen3-VL-Embedding-8B"
+    student_model: str = "Qwen/Qwen3.5-0.8B-Base"
     teacher_max_model_len: int = 8192
     teacher_prompt_margin_tokens: int = 256
 

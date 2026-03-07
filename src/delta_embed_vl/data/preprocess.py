@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from datasets import Dataset
+from transformers import Qwen3VLProcessor
 
 from delta_embed_vl.artifacts import versioned_name
 from delta_embed_vl.data.download import (
@@ -19,6 +20,9 @@ from delta_embed_vl.model.embedding_inputs import (
     EmbeddingInput,
     count_teacher_processed_tokens,
     count_teacher_prompt_tokens,
+    get_student_processor,
+    sample_fits_student,
+    student_batch_fit_flags,
     teacher_processed_token_lengths,
     teacher_prompt_token_limit,
 )
@@ -158,11 +162,22 @@ def _ensure_teacher_safe(text: str) -> list[str]:
     return _ensure_text_safe(text, fits=_fits_teacher_prompt)
 
 
-def _ensure_multimodal_teacher_safe(text: str, image: ImageLike) -> list[str]:
+def _ensure_multimodal_joint_safe(
+    text: str,
+    image: ImageLike,
+    *,
+    processor: Qwen3VLProcessor,
+    max_length: int,
+) -> list[str]:
     return _ensure_text_safe(
         text,
-        fits=lambda candidate: _fits_teacher_processed(
-            EmbeddingInput(text=candidate, image=image)
+        fits=lambda candidate: (
+            _fits_teacher_processed(EmbeddingInput(text=candidate, image=image))
+            and sample_fits_student(
+                processor,
+                EmbeddingInput(text=candidate, image=image),
+                max_length=max_length,
+            )
         ),
     )
 
@@ -375,9 +390,18 @@ def preprocess_wikipedia(*, limit: int | None = None) -> Dataset:
     return ds
 
 
-def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Dataset:
+def preprocess_cauldron_config(
+    config: str,
+    *,
+    limit: int | None = None,
+    student_max_length: int = 8192,
+) -> Dataset:
     """Convert one Cauldron config into a unified Arrow dataset on disk."""
-    out_path = _PROCESSED_DIR / "cauldron" / versioned_name(config, limit=limit)
+    out_path = (
+        _PROCESSED_DIR
+        / "cauldron"
+        / f"{versioned_name(config, limit=limit)}_student{student_max_length}"
+    )
     empty_rows: dict[str, list] = {
         "text": [],
         "modality": [],
@@ -399,6 +423,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
     skipped_images = 0
     skipped_overlength = 0
+    skipped_student_overlength = 0
     split_rows = 0
     emitted_rows = 0
     progress = ProgressBar(
@@ -407,6 +432,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
         unit="examples",
     )
     logger.info("cauldron/%s: preprocessing %d examples", config, total_examples)
+    student_processor = get_student_processor()
 
     def _normalize_cauldron_batch(batch: dict[str, list]) -> dict[str, list]:
         nonlocal \
@@ -414,6 +440,7 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
             processed_examples, \
             skipped_images, \
             skipped_overlength, \
+            skipped_student_overlength, \
             split_rows
         rows: dict[str, list] = {
             "text": [],
@@ -458,18 +485,27 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
         if candidate_samples:
             processed_lengths = _batched_processed_lengths(candidate_samples)
+            student_fit_flags = student_batch_fit_flags(
+                student_processor,
+                candidate_samples,
+                max_length=student_max_length,
+            )
             for (
                 source_index,
                 image_index,
                 modality,
                 text,
                 image,
-            ), processed_tokens in zip(
+            ), processed_tokens, student_fits in zip(
                 candidate_metadata,
                 processed_lengths,
+                student_fit_flags,
                 strict=False,
             ):
-                if processed_tokens <= teacher_prompt_token_limit():
+                if (
+                    processed_tokens <= teacher_prompt_token_limit()
+                    and student_fits
+                ):
                     _append_cauldron_row(
                         rows,
                         text=text,
@@ -481,16 +517,39 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
 
                 if modality != "text_image" or not text:
                     skipped_overlength += 1
+                    if not student_fits:
+                        skipped_student_overlength += 1
                     logger.warning(
-                        "Skipping overlength cauldron/%s source=%d image=%d processed_tokens=%d",
+                        "Skipping overlength cauldron/%s source=%d image=%d processed_tokens=%d student_fits=%s max_length=%d",
                         config,
                         source_index,
                         image_index,
                         processed_tokens,
+                        student_fits,
+                        student_max_length,
                     )
                     continue
 
-                safe_chunks = _ensure_multimodal_teacher_safe(text, image)
+                safe_chunks = _ensure_multimodal_joint_safe(
+                    text,
+                    image,
+                    processor=student_processor,
+                    max_length=student_max_length,
+                )
+                if not safe_chunks:
+                    skipped_overlength += 1
+                    if not student_fits:
+                        skipped_student_overlength += 1
+                    logger.warning(
+                        "Skipping unsplittable cauldron/%s source=%d image=%d processed_tokens=%d student_fits=%s max_length=%d",
+                        config,
+                        source_index,
+                        image_index,
+                        processed_tokens,
+                        student_fits,
+                        student_max_length,
+                    )
+                    continue
                 split_rows += max(0, len(safe_chunks) - 1)
                 for chunk in safe_chunks:
                     _append_cauldron_row(
@@ -507,7 +566,8 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
             processed_examples,
             extra=(
                 f"rows={emitted_rows:,}, split_rows={split_rows:,}, "
-                f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}"
+                f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}, "
+                f"skipped_student_overlength={skipped_student_overlength:,}"
             ),
         )
         return rows
@@ -521,30 +581,44 @@ def preprocess_cauldron_config(config: str, *, limit: int | None = None) -> Data
     progress.close(
         extra=(
             f"rows={emitted_rows:,}, split_rows={split_rows:,}, "
-            f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}"
+            f"skipped_images={skipped_images:,}, skipped_overlength={skipped_overlength:,}, "
+            f"skipped_student_overlength={skipped_student_overlength:,}"
         )
     )
     _save_processed_dataset(ds, out_path, empty_rows=empty_rows)
     logger.info(
-        "Processed cauldron/%s: rows=%d split_rows=%d skipped_images=%d skipped_overlength=%d",
+        "Processed cauldron/%s: rows=%d split_rows=%d skipped_images=%d skipped_overlength=%d skipped_student_overlength=%d",
         config,
         len(ds),
         split_rows,
         skipped_images,
         skipped_overlength,
+        skipped_student_overlength,
     )
     return ds
 
 
-def preprocess_cauldron(*, limit: int | None = None) -> list[Dataset]:
+def preprocess_cauldron(
+    *,
+    limit: int | None = None,
+    student_max_length: int = 8192,
+) -> list[Dataset]:
     """Process all Cauldron configs, returning a list of Arrow datasets."""
     return [
-        preprocess_cauldron_config(config, limit=limit) for config in CAULDRON_CONFIGS
+        preprocess_cauldron_config(
+            config,
+            limit=limit,
+            student_max_length=student_max_length,
+        )
+        for config in CAULDRON_CONFIGS
     ]
 
 
 def preprocess_data(
-    download_first: bool = False, *, limit: int | None = None
+    download_first: bool = False,
+    *,
+    limit: int | None = None,
+    student_max_length: int = 8192,
 ) -> tuple[Dataset, list[Dataset]]:
     """Entry point: returns (wikipedia_dataset, cauldron_datasets).
 
@@ -555,5 +629,8 @@ def preprocess_data(
         download_data(limit=limit)
 
     wikipedia = preprocess_wikipedia(limit=limit)
-    cauldron = preprocess_cauldron(limit=limit)
+    cauldron = preprocess_cauldron(
+        limit=limit,
+        student_max_length=student_max_length,
+    )
     return wikipedia, cauldron
