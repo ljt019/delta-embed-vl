@@ -53,6 +53,7 @@ uv run eval-model
 
 ```bash
 uv run scripts/check_teacher.py --device cuda:0 --image-size 64
+uv run scripts/check_student.py --device cuda:1 --image-size 64
 uv run train-model \
   --limit 8 \
   --epochs 1 \
@@ -75,4 +76,5 @@ src/delta_embed_vl/
   settings.py  configuration (data_dir, teacher model, token limits)
 scripts/
   check_teacher.py   smoke test local teacher embeddings
+  check_student.py   smoke test local student embeddings
 ```
