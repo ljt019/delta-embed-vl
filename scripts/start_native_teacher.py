@@ -312,7 +312,7 @@ def create_app(config: ServerConfig) -> Any:
         engine = AsyncLLMEngine.from_engine_args(engine_args)
 
         app.state.engine = engine
-        app.state.pooling_params = PoolingParams()
+        app.state.pooling_params = PoolingParams(task="embed")
         app.state.tokenizer = tokenizer
         app.state.image_client = httpx_module.AsyncClient(timeout=30.0)
         app.state.counters = {
