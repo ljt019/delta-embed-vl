@@ -57,7 +57,7 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
-    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--save-dir", type=str, default="checkpoints")
     parser.add_argument("--teacher-device", type=str, default=None)
@@ -112,7 +112,7 @@ def train_model(
     batch_size: int = 32,
     lr: float = 2e-5,
     warmup_ratio: float = 0.1,
-    max_length: int = 512,
+    max_length: int = 8192,
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
     teacher_device: str | None = None,

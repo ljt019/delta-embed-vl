@@ -162,7 +162,7 @@ def train(
     batch_size: int = 32,
     lr: float = 2e-5,
     warmup_ratio: float = 0.1,
-    max_length: int = 512,
+    max_length: int = 8192,
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
     teacher_device: str | None = None,

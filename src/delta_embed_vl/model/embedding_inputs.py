@@ -161,7 +161,7 @@ def _build_processor_batch(
     truncation: bool,
     max_length: int | None = None,
 ) -> BatchFeature:
-    tokenizer = get_teacher_tokenizer()
+    tokenizer = get_processor_tokenizer(processor)
     resolved_inputs = [_resolve_input(sample) for sample in samples]
     prompts = [
         _render_prompt(
@@ -225,13 +225,21 @@ def build_student_batch(
     *,
     max_length: int,
 ) -> BatchFeature:
-    return _build_processor_batch(
-        processor,
-        samples,
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-    )
+    try:
+        return _build_processor_batch(
+            processor,
+            samples,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
+    except ValueError as exc:
+        if "Mismatch in `image` token count" not in str(exc):
+            raise
+        raise ValueError(
+            "Student batch exceeds the configured max_length after multimodal token expansion. "
+            f"Increase --max-length (current: {max_length}; try 2048 or 4096)."
+        ) from exc
 
 
 def build_teacher_batch(

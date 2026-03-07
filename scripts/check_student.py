@@ -13,7 +13,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--text", default="I love dogs")
     parser.add_argument("--image-size", type=int, default=None)
-    parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument("--max-length", type=int, default=8192)
     args = parser.parse_args()
 
     image = None
