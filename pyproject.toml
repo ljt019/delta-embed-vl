@@ -20,19 +20,17 @@ dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "qwen-vl-utils>=0.0.14",
-    "torch>=2.0.0",
-    "torchvision>=0.20.0",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
     "tqdm>=4.67.3",
     "transformers>=5.3.0",
 ]
 
 [project.optional-dependencies]
 accel = [
+    "causal-conv1d; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
     "flash-attn; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
     "flash-linear-attention; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
-]
-accel-build = [
-    "causal-conv1d; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
 ]
 
 
@@ -55,10 +53,14 @@ torch = [
 torchvision = [
   { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+causal-conv1d = [
+  # Match our Linux x86_64 / Python 3.13 / torch 2.8.0+cu128 / cxx11abi=TRUE setup.
+  { url = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.0/causal_conv1d-1.6.0%2Bcu12torch2.8cxx11abiTRUE-cp313-cp313-linux_x86_64.whl", extra = "accel", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'" },
+]
 flash-attn = [
   # PyPI installs flash-attn from source, which requires nvcc. Use a matching
-  # prebuilt wheel for our Linux x86_64 / Python 3.13 / torch 2.10.0+cu128 setup.
-  { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.10-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", extra = "accel", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'" },
+  # prebuilt wheel for our Linux x86_64 / Python 3.13 / torch 2.8.0+cu128 setup.
+  { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.8-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", extra = "accel", marker = "sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'" },
 ]
 
 [dependency-groups]
