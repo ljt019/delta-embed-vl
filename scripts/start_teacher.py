@@ -10,7 +10,7 @@ import sys
 
 GPU_MEMORY_UTILIZATION = "0.95"
 DATA_PARALLEL_SIZE = "2"
-API_SERVER_COUNT = "6"
+API_SERVER_COUNT = "4"
 
 COMMAND = [
     "vllm",
