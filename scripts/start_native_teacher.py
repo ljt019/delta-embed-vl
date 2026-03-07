@@ -68,13 +68,12 @@ def parse_args() -> ServerConfig:
     )
 
 
-def load_fastapi_symbols() -> tuple[Any, Any, Any, Any]:
+def load_fastapi_symbols() -> tuple[Any, Any, Any]:
     fastapi_module = importlib.import_module("fastapi")
     responses_module = importlib.import_module("fastapi.responses")
     return (
         fastapi_module.FastAPI,
         fastapi_module.HTTPException,
-        fastapi_module.Request,
         responses_module.PlainTextResponse,
     )
 
@@ -262,7 +261,7 @@ def render_metrics(app: Any) -> str:
 
 
 def create_app(config: ServerConfig) -> Any:
-    FastAPI, HTTPException, Request, PlainTextResponse = load_fastapi_symbols()
+    FastAPI, HTTPException, PlainTextResponse = load_fastapi_symbols()
 
     @asynccontextmanager
     async def lifespan(app: Any) -> AsyncIterator[None]:
@@ -345,11 +344,10 @@ def create_app(config: ServerConfig) -> Any:
         return PlainTextResponse(render_metrics(app), media_type="text/plain")
 
     @app.post("/v1/embeddings")
-    async def embeddings(request: Request) -> dict[str, object]:
+    async def embeddings(payload: dict[str, Any]) -> dict[str, object]:
         app.state.counters["requests_total"] += 1
         app.state.counters["requests_in_flight"] += 1
         try:
-            payload = cast(dict[str, Any], await request.json())
             requested_model = payload.get("model")
             if requested_model is not None and requested_model != config.model:
                 raise HTTPException(
