@@ -6,7 +6,6 @@ from datasets import disable_progress_bars
 
 from delta_embed_vl.data.preprocess import preprocess_data
 from delta_embed_vl.eval.mteb_eval import run_eval
-from delta_embed_vl.teacher.generate import embed_all
 from delta_embed_vl.training.distill import train
 
 logger = logging.getLogger(__name__)
@@ -32,6 +31,9 @@ class TrainRunArgs:
     max_length: int
     grad_accum_steps: int
     save_dir: str
+    teacher_device: str | None
+    student_device: str | None
+    teacher_batch_size: int | None
 
 
 def _configure_logging() -> None:
@@ -58,6 +60,9 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--save-dir", type=str, default="checkpoints")
+    parser.add_argument("--teacher-device", type=str, default=None)
+    parser.add_argument("--student-device", type=str, default=None)
+    parser.add_argument("--teacher-batch-size", type=int, default=None)
 
 
 def _parse_limit() -> int | None:
@@ -81,16 +86,16 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
         max_length=args.max_length,
         grad_accum_steps=args.grad_accum_steps,
         save_dir=args.save_dir,
+        teacher_device=args.teacher_device,
+        student_device=args.student_device,
+        teacher_batch_size=args.teacher_batch_size,
     )
 
 
 def prepare_data(*, limit: int | None = None):
-    """Preprocess to Arrow and generate teacher embeddings."""
+    """Preprocess datasets to Arrow caches."""
     logger.info("Preprocessing datasets")
     preprocess_data(limit=limit)
-
-    logger.info("Generating teacher embeddings")
-    embed_all(limit=limit)
 
     logger.info("Data preparation complete")
 
@@ -110,8 +115,11 @@ def train_model(
     max_length: int = 512,
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
+    teacher_device: str | None = None,
+    student_device: str | None = None,
+    teacher_batch_size: int | None = None,
 ):
-    """Train student via cosine distillation on all available prepared data."""
+    """Train student via local teacher-student cosine distillation."""
     train(
         limit=limit,
         epochs=epochs,
@@ -121,6 +129,9 @@ def train_model(
         max_length=max_length,
         grad_accum_steps=grad_accum_steps,
         save_dir=save_dir,
+        teacher_device=teacher_device,
+        student_device=student_device,
+        teacher_batch_size=teacher_batch_size,
     )
 
 
@@ -136,6 +147,9 @@ def train_model_cli():
         max_length=args.max_length,
         grad_accum_steps=args.grad_accum_steps,
         save_dir=args.save_dir,
+        teacher_device=args.teacher_device,
+        student_device=args.student_device,
+        teacher_batch_size=args.teacher_batch_size,
     )
 
 
@@ -165,6 +179,9 @@ def main():
         max_length=args.max_length,
         grad_accum_steps=args.grad_accum_steps,
         save_dir=args.save_dir,
+        teacher_device=args.teacher_device,
+        student_device=args.student_device,
+        teacher_batch_size=args.teacher_batch_size,
     )
     eval_model(model_path=args.save_dir)
 

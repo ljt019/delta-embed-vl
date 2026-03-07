@@ -26,13 +26,16 @@ class EmbeddingInput:
 
 @lru_cache
 def get_teacher_processor() -> Qwen3VLProcessor:
-    return cast(
+    processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
             _settings.teacher_model,
             trust_remote_code=True,
         ),
     )
+    tokenizer = get_processor_tokenizer(processor)
+    tokenizer.padding_side = "right"
+    return processor
 
 
 def get_processor_tokenizer(processor: object) -> PreTrainedTokenizerBase:
@@ -228,4 +231,16 @@ def build_student_batch(
         padding=True,
         truncation=True,
         max_length=max_length,
+    )
+
+
+def build_teacher_batch(
+    processor: Qwen3VLProcessor,
+    samples: list[EmbeddingInput],
+) -> BatchFeature:
+    return _build_processor_batch(
+        processor,
+        samples,
+        padding=True,
+        truncation=False,
     )

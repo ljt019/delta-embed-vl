@@ -5,12 +5,12 @@ Distills Qwen3-VL-Embedding-8B into Qwen3.5-0.8B-Base - a natively multimodal vi
 ## Pipeline
 
 ```
-download → preprocess → teacher embeddings → distill → MTEB eval
+download → preprocess → local teacher/student distill → MTEB eval
 ```
 
 **Data sources:** Wikipedia (text) + [The Cauldron](https://huggingface.co/datasets/HuggingFaceM4/the_cauldron) (30 multimodal VQA/captioning/OCR/chart/table configs).
 
-**Teacher:** Qwen3-VL-Embedding-8B served locally via vLLM, generates target embeddings over the full dataset.
+**Teacher:** Qwen3-VL-Embedding-8B loaded in-process as a frozen local model.
 
 **Student:** Qwen3.5-0.8B-Base with last-token pooling + L2 normalization, trained to match teacher embeddings with cosine loss.
 
@@ -24,16 +24,13 @@ uv sync
 
 ## Usage
 
-### Start the teacher server
-
-```bash
-uv run scripts/start_teacher.py
-```
-
 ### Run the full pipeline
 
 ```bash
 uv run delta-embed-pipeline \
+  --teacher-device cuda:0 \
+  --student-device cuda:1 \
+  --teacher-batch-size 8 \
   --batch-size 8 \
   --grad-accum-steps 4 \
   --max-length 512 \
@@ -43,30 +40,39 @@ uv run delta-embed-pipeline \
 ### Individual stages
 
 ```bash
-uv run prepare-data                # download + preprocess + teacher embeddings
-uv run train-model --batch-size 8  # distillation only
-uv run eval-model                  # MTEB eval from checkpoints/
+uv run prepare-data
+uv run train-model \
+  --teacher-device cuda:0 \
+  --student-device cuda:1 \
+  --teacher-batch-size 8 \
+  --batch-size 8
+uv run eval-model
 ```
 
 ### Smoke test
 
 ```bash
-uv run delta-embed-pipeline --limit 10 --batch-size 4 --grad-accum-steps 8
+uv run scripts/check_teacher.py --device cuda:0 --image-size 64
+uv run train-model \
+  --limit 8 \
+  --epochs 1 \
+  --batch-size 2 \
+  --teacher-batch-size 2 \
+  --teacher-device cuda:0 \
+  --student-device cuda:1
 ```
 
 ## Project structure
 
 ```
-src/delta_embed/
+src/delta_embed_vl/
   data/        download, preprocess, dataloader
-  teacher/     teacher embedding generation (async, vLLM API)
-  model/       student model loading, pooling
-  training/    cosine distillation loop
+  teacher/     teacher length audit utilities
+  model/       teacher + student model loading, pooling
+  training/    local teacher-student distillation loop
   eval/        MTEB evaluation wrapper
   main.py      CLI entrypoints
-  settings.py  configuration (data_dir, teacher URL, concurrency)
+  settings.py  configuration (data_dir, teacher model, token limits)
 scripts/
-  start_teacher.py   launch vLLM teacher server
-  test_pipeline.py   quick pipeline sanity check
-  check_teacher.py   verify teacher server is responding
+  check_teacher.py   smoke test local teacher embeddings
 ```

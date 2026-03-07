@@ -19,6 +19,7 @@ dependencies = [
     "openai>=2.24.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
+    "qwen-vl-utils>=0.0.14",
     "torch>=2.0.0",
     "torchvision>=0.20.0",
     "tqdm>=4.67.3",

@@ -1,4 +1,5 @@
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,6 @@ from datasets import Dataset
 from torch.optim import AdamW
 from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
 
-from delta_embed_vl.artifacts import versioned_name
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
 from delta_embed_vl.data.preprocess import (
     load_cauldron_embedding_input,
@@ -19,70 +19,57 @@ from delta_embed_vl.data.preprocess import (
 from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
-from delta_embed_vl.settings import Settings
+from delta_embed_vl.model.teacher import TeacherEmbedder, load_teacher
 from delta_embed_vl.training.losses import cosine_distill_loss
 
 logger = logging.getLogger(__name__)
-
-_settings = Settings()
-_EMBEDDINGS_DIR = _settings.data_dir / "embeddings"
 
 
 @dataclass(frozen=True)
 class PreparedSource:
     name: str
-    embeddings: np.ndarray
     load_example: Callable[[int], EmbeddingInput]
     start: int
     stop: int
 
 
-def _load_teacher_embeddings(path: Path) -> np.ndarray:
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Teacher embeddings not found at {path}. Run `prepare-data` first."
-        )
-    return np.load(str(path), mmap_mode="r")
+def _auto_teacher_device() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    return "cuda:0"
+
+
+def _auto_student_device() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    if torch.cuda.device_count() > 1:
+        return "cuda:1"
+    return "cuda:0"
 
 
 def _build_sources(
     *, limit: int | None = None
-) -> tuple[list[PreparedSource], int, int]:
-    """Load processed data and teacher embeddings without concatenating them in RAM."""
+) -> tuple[list[PreparedSource], int]:
+    """Load processed data and resolve each global index back to an example."""
     wiki_ds = preprocess_wikipedia(limit=limit)
-    wiki_emb = _load_teacher_embeddings(
-        _EMBEDDINGS_DIR / f"{versioned_name('wikipedia', limit=limit)}.npy"
-    )
-
     cauldron_datasets = preprocess_cauldron(limit=limit)
 
     sources: list[PreparedSource] = []
     next_start = 0
-    teacher_dim = int(wiki_emb.shape[1])
 
     def add_source(
         name: str,
         *,
         count: int,
-        emb: np.ndarray,
         load_example: Callable[[int], EmbeddingInput],
     ) -> None:
-        nonlocal next_start, teacher_dim
-        if count == 0 or emb.shape[0] == 0:
+        nonlocal next_start
+        if count == 0:
             logger.info("Skipping empty %s", name)
             return
-        if count != emb.shape[0]:
-            raise ValueError(
-                f"Dataset/embedding mismatch for {name}: {count} vs {emb.shape[0]}"
-            )
-        if emb.shape[1] != teacher_dim:
-            raise ValueError(
-                f"Embedding dimension mismatch for {name}: expected {teacher_dim}, got {emb.shape[1]}"
-            )
         sources.append(
             PreparedSource(
                 name=name,
-                embeddings=emb,
                 load_example=load_example,
                 start=next_start,
                 stop=next_start + count,
@@ -97,7 +84,6 @@ def _build_sources(
     add_source(
         "wikipedia",
         count=len(wiki_ds),
-        emb=wiki_emb,
         load_example=load_wikipedia_example,
     )
 
@@ -123,18 +109,13 @@ def _build_sources(
         return load_example
 
     for config, ds in zip(CAULDRON_CONFIGS, cauldron_datasets, strict=False):
-        emb_path = (
-            _EMBEDDINGS_DIR / "cauldron" / f"{versioned_name(config, limit=limit)}.npy"
-        )
-        emb = _load_teacher_embeddings(emb_path)
         add_source(
             f"cauldron/{config}",
             count=len(ds),
-            emb=emb,
             load_example=make_cauldron_loader(config, ds),
         )
 
-    return sources, next_start, teacher_dim
+    return sources, next_start
 
 
 def _resolve_source(
@@ -148,7 +129,6 @@ def _resolve_source(
 
 def _collate(
     batch: list[EmbeddingInput],
-    teacher_targets: np.ndarray,
     processor: Qwen3VLProcessor,
     max_length: int,
 ) -> dict[str, torch.Tensor]:
@@ -157,10 +137,22 @@ def _collate(
         batch,
         max_length=max_length,
     )
-    teacher_target = torch.from_numpy(teacher_targets).float()
-    batch_data = {key: value for key, value in encoded.items()}
-    batch_data["teacher_target"] = teacher_target
-    return batch_data
+    return {key: value for key, value in encoded.items()}
+
+
+def _embed_teacher_targets(
+    teacher: TeacherEmbedder,
+    batch: list[EmbeddingInput],
+    *,
+    teacher_batch_size: int,
+    target_device: str,
+) -> torch.Tensor:
+    chunks: list[torch.Tensor] = []
+    for start in range(0, len(batch), teacher_batch_size):
+        stop = start + teacher_batch_size
+        embeddings = teacher.embed(batch[start:stop])
+        chunks.append(embeddings.to(device=target_device, non_blocking=True))
+    return torch.cat(chunks, dim=0)
 
 
 def train(
@@ -173,24 +165,46 @@ def train(
     max_length: int = 512,
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
+    teacher_device: str | None = None,
+    student_device: str | None = None,
+    teacher_batch_size: int | None = None,
 ) -> None:
-    """Run cosine distillation training on multimodal data."""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info("Device: %s", device)
+    """Run local teacher-student cosine distillation on multimodal data."""
+    if grad_accum_steps < 1:
+        raise ValueError("grad_accum_steps must be at least 1.")
 
-    logger.info("Loading training data + teacher embeddings")
-    sources, n, teacher_dim = _build_sources(limit=limit)
+    resolved_teacher_device = teacher_device or _auto_teacher_device()
+    resolved_student_device = student_device or _auto_student_device()
+    resolved_teacher_batch_size = teacher_batch_size or batch_size
+    if resolved_teacher_batch_size < 1:
+        raise ValueError("teacher_batch_size must be at least 1.")
+
+    logger.info(
+        "Devices: teacher=%s student=%s",
+        resolved_teacher_device,
+        resolved_student_device,
+    )
+
+    logger.info("Loading training data")
+    sources, n = _build_sources(limit=limit)
+    if n == 0:
+        raise ValueError("No training samples found.")
     logger.info("Training on %d samples for %d epochs", n, epochs)
+
+    logger.info("Loading frozen teacher model")
+    teacher = load_teacher(device=resolved_teacher_device)
 
     logger.info("Loading student model")
     model, processor, projection_head = load_student(
-        device=device, output_dim=teacher_dim
+        device=resolved_student_device,
+        output_dim=teacher.output_dim,
     )
     model.train()
     projection_head.train()
 
     indices = np.arange(n, dtype=np.int64)
-    total_steps = (n * epochs) // (batch_size * grad_accum_steps)
+    batches_per_epoch = math.ceil(n / batch_size)
+    total_steps = math.ceil((batches_per_epoch * epochs) / grad_accum_steps)
     warmup_steps = int(total_steps * warmup_ratio)
 
     optimizer = AdamW(
@@ -202,6 +216,7 @@ def train(
     )
 
     global_step = 0
+    optimizer.zero_grad(set_to_none=True)
     for epoch in range(epochs):
         np.random.shuffle(indices)
         epoch_loss = 0.0
@@ -211,26 +226,25 @@ def train(
             batch_end = min(batch_start + batch_size, n)
             batch_indices = indices[batch_start:batch_end]
             batch_samples: list[EmbeddingInput] = []
-            teacher_targets: list[np.ndarray] = []
             for global_index in batch_indices:
                 source, local_index = _resolve_source(sources, int(global_index))
                 batch_samples.append(source.load_example(local_index))
-                teacher_targets.append(
-                    np.asarray(source.embeddings[local_index], dtype=np.float32)
-                )
 
             batch_data = _collate(
                 batch_samples,
-                np.stack(teacher_targets),
                 processor,
                 max_length,
             )
+            teacher_target = _embed_teacher_targets(
+                teacher,
+                batch_samples,
+                teacher_batch_size=resolved_teacher_batch_size,
+                target_device=resolved_student_device,
+            )
 
-            teacher_target = batch_data["teacher_target"].to(device)
             model_inputs = {
-                key: value.to(device)
+                key: value.to(resolved_student_device)
                 for key, value in batch_data.items()
-                if key != "teacher_target"
             }
 
             outputs = model(**model_inputs)
@@ -241,14 +255,15 @@ def train(
             loss = cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
             loss.backward()
 
-            if (num_batches + 1) % grad_accum_steps == 0:
+            num_batches += 1
+            should_step = (num_batches % grad_accum_steps == 0) or (batch_end == n)
+            if should_step:
                 optimizer.step()
                 scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 global_step += 1
 
             epoch_loss += loss.item() * grad_accum_steps
-            num_batches += 1
 
         avg_loss = epoch_loss / max(num_batches, 1)
         logger.info(
