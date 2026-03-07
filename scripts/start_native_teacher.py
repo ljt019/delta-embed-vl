@@ -231,16 +231,31 @@ async def build_engine_input(payload: dict[str, Any], app: Any) -> dict[str, obj
 
 def extract_embedding(output: object) -> list[float]:
     outputs = getattr(output, "outputs", None)
+    if outputs is None:
+        raise ValueError(f"Could not extract outputs from {type(output)!r}")
+
     embedding = getattr(outputs, "embedding", None)
-    if embedding is None:
+    if embedding is not None:
+        if hasattr(embedding, "tolist"):
+            embedding = embedding.tolist()
+        if not isinstance(embedding, list):
+            raise ValueError("Embedding output was not list-like.")
+        return [float(value) for value in embedding]
+
+    pooled_data = getattr(outputs, "data", None)
+    if pooled_data is None:
         raise ValueError(
             f"Could not extract embedding from output type {type(output)!r}"
         )
-    if hasattr(embedding, "tolist"):
-        embedding = embedding.tolist()
-    if not isinstance(embedding, list):
-        raise ValueError("Embedding output was not list-like.")
-    return [float(value) for value in embedding]
+    if hasattr(pooled_data, "detach"):
+        pooled_data = pooled_data.detach()
+    if hasattr(pooled_data, "cpu"):
+        pooled_data = pooled_data.cpu()
+    if hasattr(pooled_data, "tolist"):
+        pooled_data = pooled_data.tolist()
+    if not isinstance(pooled_data, list):
+        raise ValueError("Pooling output data was not list-like.")
+    return [float(value) for value in pooled_data]
 
 
 def render_metrics(app: Any) -> str:
