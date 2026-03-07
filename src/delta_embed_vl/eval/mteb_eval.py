@@ -24,6 +24,7 @@ from delta_embed_vl.model.student import (
 )
 
 logger = logging.getLogger(__name__)
+_DEFAULT_EVAL_BATCH_SIZE = 8
 
 
 def _as_mteb_model_name(model_name: str) -> str:
@@ -69,7 +70,7 @@ class DeltaEmbedEncoder:
         **kwargs: Unpack[EncodeKwargs],
     ) -> Array:
         all_texts: list[str] = [text for batch in inputs for text in batch["text"]]
-        batch_size = kwargs.get("batch_size", 32)
+        batch_size = kwargs.get("batch_size", _DEFAULT_EVAL_BATCH_SIZE)
         all_embeddings: list[torch.Tensor] = []
 
         with torch.no_grad():
@@ -142,7 +143,11 @@ def run_eval(
 
     encoder = DeltaEmbedEncoder(model_name=model_path)
     mteb_tasks = mteb.get_tasks(tasks=tasks, languages=["eng"])
-    result = mteb.evaluate(encoder, mteb_tasks, encode_kwargs={"batch_size": 32})
+    result = mteb.evaluate(
+        encoder,
+        mteb_tasks,
+        encode_kwargs={"batch_size": _DEFAULT_EVAL_BATCH_SIZE},
+    )
 
     for task_result in result.task_results:
         logger.info("%s: %s", task_result.task_name, task_result.get_score())
