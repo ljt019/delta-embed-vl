@@ -24,7 +24,7 @@ from delta_embed_vl.model.student import (
 )
 
 logger = logging.getLogger(__name__)
-_DEFAULT_EVAL_BATCH_SIZE = 8
+_DEFAULT_EVAL_BATCH_SIZE = 16
 
 
 def _as_mteb_model_name(model_name: str) -> str:
@@ -53,7 +53,9 @@ class DeltaEmbedEncoder:
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model, self.processor, self.projection_head = load_student(
-            model_id=model_name, device=self._device
+            model_id=model_name,
+            device=self._device,
+            attn_implementation="sdpa",
         )
         self.model.eval()
         self.projection_head.eval()
@@ -131,6 +133,7 @@ class DeltaEmbedEncoder:
 def run_eval(
     model_path: str = STUDENT_MODEL_ID,
     tasks: list[str] | None = None,
+    eval_batch_size: int = _DEFAULT_EVAL_BATCH_SIZE,
 ) -> ModelResult:
     """Run MTEB evaluation on the given tasks."""
     if tasks is None:
@@ -146,7 +149,7 @@ def run_eval(
     result = mteb.evaluate(
         encoder,
         mteb_tasks,
-        encode_kwargs={"batch_size": _DEFAULT_EVAL_BATCH_SIZE},
+        encode_kwargs={"batch_size": eval_batch_size},
     )
 
     for task_result in result.task_results:

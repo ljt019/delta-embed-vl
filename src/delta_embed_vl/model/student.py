@@ -93,17 +93,18 @@ def load_student(
     device: str = "cuda",
     dtype: torch.dtype = torch.bfloat16,
     output_dim: int | None = None,
+    attn_implementation: str | None = None,
 ) -> tuple[Qwen3_5Model, Qwen3VLProcessor, nn.Module]:
     """Load the student backbone and multimodal processor."""
     if device.startswith("cuda"):
-        attn_implementation = (
+        resolved_attn_implementation = attn_implementation or (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         )
-        logger.info("Loading student with %s attention", attn_implementation)
+        logger.info("Loading student with %s attention", resolved_attn_implementation)
         model = Qwen3_5Model.from_pretrained(
             model_id,
             torch_dtype=dtype,
-            attn_implementation=attn_implementation,
+            attn_implementation=resolved_attn_implementation,
         )
     else:
         model = Qwen3_5Model.from_pretrained(

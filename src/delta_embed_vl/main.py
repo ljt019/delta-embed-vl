@@ -34,6 +34,7 @@ class TrainRunArgs:
     teacher_device: str | None
     student_device: str | None
     teacher_batch_size: int | None
+    eval_batch_size: int
 
 
 def _configure_logging() -> None:
@@ -63,6 +64,7 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--teacher-device", type=str, default=None)
     parser.add_argument("--student-device", type=str, default=None)
     parser.add_argument("--teacher-batch-size", type=int, default=None)
+    parser.add_argument("--eval-batch-size", type=int, default=16)
 
 
 def _parse_limit() -> int | None:
@@ -89,6 +91,7 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
         teacher_device=args.teacher_device,
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
+        eval_batch_size=args.eval_batch_size,
     )
 
 
@@ -153,17 +156,18 @@ def train_model_cli():
     )
 
 
-def eval_model(*, model_path: str = "checkpoints"):
+def eval_model(*, model_path: str = "checkpoints", eval_batch_size: int = 16):
     """Run MTEB eval on the latest checkpoint directory."""
-    run_eval(model_path=model_path)
+    run_eval(model_path=model_path, eval_batch_size=eval_batch_size)
 
 
 def eval_model_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, default="checkpoints")
+    parser.add_argument("--eval-batch-size", type=int, default=16)
     args = parser.parse_args()
     _configure_logging()
-    eval_model(model_path=args.model_path)
+    eval_model(model_path=args.model_path, eval_batch_size=args.eval_batch_size)
 
 
 def main():
@@ -183,7 +187,7 @@ def main():
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
     )
-    eval_model(model_path=args.save_dir)
+    eval_model(model_path=args.save_dir, eval_batch_size=args.eval_batch_size)
 
 
 if __name__ == "__main__":
