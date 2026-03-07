@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from delta_embed_vl.model.teacher import TeacherEmbedder, load_teacher
 from delta_embed_vl.training.losses import cosine_distill_loss
 
 logger = logging.getLogger(__name__)
+_PROGRESS_LOG_INTERVAL_S = 30.0
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,13 @@ def _embed_teacher_targets(
     return torch.cat(chunks, dim=0)
 
 
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(int(seconds), 0)
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
+
+
 def train(
     *,
     limit: int | None = None,
@@ -221,8 +230,11 @@ def train(
         np.random.shuffle(indices)
         epoch_loss = 0.0
         num_batches = 0
+        epoch_start_s = time.monotonic()
+        last_progress_log_s = epoch_start_s
 
         for batch_start in range(0, n, batch_size):
+            batch_start_s = time.monotonic()
             batch_end = min(batch_start + batch_size, n)
             batch_indices = indices[batch_start:batch_end]
             batch_samples: list[EmbeddingInput] = []
@@ -264,6 +276,28 @@ def train(
                 global_step += 1
 
             epoch_loss += loss.item() * grad_accum_steps
+            now_s = time.monotonic()
+            batch_elapsed_s = now_s - batch_start_s
+
+            if num_batches == 1 or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S:
+                elapsed_s = now_s - epoch_start_s
+                avg_batch_s = elapsed_s / max(num_batches, 1)
+                remaining_batches = max(batches_per_epoch - num_batches, 0)
+                eta_s = avg_batch_s * remaining_batches
+                logger.info(
+                    "Epoch %d/%d  %d/%d batches (%.1f%%)  loss=%.6f avg=%.6f  batch=%.2fs  elapsed=%s  eta=%s",
+                    epoch + 1,
+                    epochs,
+                    num_batches,
+                    batches_per_epoch,
+                    (100.0 * num_batches) / max(batches_per_epoch, 1),
+                    loss.item() * grad_accum_steps,
+                    epoch_loss / max(num_batches, 1),
+                    batch_elapsed_s,
+                    _format_duration(elapsed_s),
+                    _format_duration(eta_s),
+                )
+                last_progress_log_s = now_s
 
         avg_loss = epoch_loss / max(num_batches, 1)
         logger.info(
