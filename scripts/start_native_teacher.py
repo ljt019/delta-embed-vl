@@ -240,6 +240,10 @@ def extract_embedding(output: object) -> list[float]:
             embedding = embedding.tolist()
         if not isinstance(embedding, list):
             raise ValueError("Embedding output was not list-like.")
+        if embedding and isinstance(embedding[0], list):
+            if len(embedding) != 1:
+                raise ValueError("Expected a single embedding row.")
+            embedding = embedding[0]
         return [float(value) for value in embedding]
 
     pooled_data = getattr(outputs, "data", None)
@@ -255,6 +259,10 @@ def extract_embedding(output: object) -> list[float]:
         pooled_data = pooled_data.tolist()
     if not isinstance(pooled_data, list):
         raise ValueError("Pooling output data was not list-like.")
+    if pooled_data and isinstance(pooled_data[0], list):
+        if len(pooled_data) != 1:
+            raise ValueError("Expected a single pooling output row.")
+        pooled_data = pooled_data[0]
     return [float(value) for value in pooled_data]
 
 
