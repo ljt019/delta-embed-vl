@@ -28,9 +28,11 @@ dependencies = [
 
 [project.optional-dependencies]
 accel = [
-    "causal-conv1d; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
     "flash-attn; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
     "flash-linear-attention; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
+]
+accel-build = [
+    "causal-conv1d; sys_platform == 'linux' and platform_machine == 'x86_64' and python_version >= '3.13' and python_version < '3.14'",
 ]
 
 
