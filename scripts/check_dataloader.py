@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, cast
 
 from datasets import Dataset, Image, Sequence, load_dataset
@@ -12,12 +13,29 @@ from delta_embed_vl.data.download import (
     WIKIPEDIA_ID,
 )
 from delta_embed_vl.data.prepare import prepare_dataset
+from delta_embed_vl.settings import Settings
 
 hf_logging.set_verbosity_error()
 
 _TEST_ROWS_PER_DATASET = 25
 _TEST_BATCH_SIZE = 4
 _TEST_MAX_LENGTH = 4096
+_RAW_SUBSET_CACHE_DIR = Settings().data_dir / "check_dataloader_cache"
+
+
+def _stream_subset_cache_dir(
+    dataset_id: str,
+    config: str,
+    *,
+    rows: int,
+) -> Path:
+    safe_dataset_id = dataset_id.replace("/", "--")
+    safe_config = config.replace("/", "--")
+    return _RAW_SUBSET_CACHE_DIR / safe_dataset_id / safe_config / f"rows{rows}"
+
+
+def _is_saved_dataset(path: Path) -> bool:
+    return (path / "dataset_info.json").exists() or (path / "state.json").exists()
 
 
 def _load_streaming_subset(
@@ -26,6 +44,30 @@ def _load_streaming_subset(
     *,
     rows: int,
 ) -> Dataset:
+    cache_dir = _stream_subset_cache_dir(
+        dataset_id,
+        config,
+        rows=rows,
+    )
+    if _is_saved_dataset(cache_dir):
+        print(
+            "raw_subset_cache_hit",
+            {
+                "dataset_id": dataset_id,
+                "config": config,
+                "rows": rows,
+            },
+        )
+        return Dataset.load_from_disk(str(cache_dir))
+
+    print(
+        "raw_subset_cache_miss",
+        {
+            "dataset_id": dataset_id,
+            "config": config,
+            "rows": rows,
+        },
+    )
     stream = load_dataset(
         dataset_id,
         config,
@@ -37,7 +79,19 @@ def _load_streaming_subset(
             "images",
             cast(Any, Sequence(Image(decode=False))),
         )
-    return Dataset.from_list(list(stream.take(rows)))
+    dataset = Dataset.from_list(list(stream.take(rows)))
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_to_disk(str(cache_dir))
+    print(
+        "raw_subset_cache_saved",
+        {
+            "dataset_id": dataset_id,
+            "config": config,
+            "rows": len(dataset),
+            "path": str(cache_dir),
+        },
+    )
+    return dataset
 
 
 def get_test_data() -> list[tuple[str, Dataset]]:
