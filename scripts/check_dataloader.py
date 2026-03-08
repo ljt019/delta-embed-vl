@@ -1,4 +1,5 @@
 import argparse
+import shutil
 from pathlib import Path
 from typing import Any, cast
 
@@ -39,7 +40,14 @@ def _is_saved_dataset(path: Path) -> bool:
 
 def _save_subset_cache(cache_dir: Path, dataset: Dataset) -> None:
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    dataset.save_to_disk(str(cache_dir))
+    temp_dir = cache_dir.with_name(f"{cache_dir.name}.tmp")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+
+    dataset.save_to_disk(str(temp_dir))
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    temp_dir.replace(cache_dir)
 
 
 def _load_streaming_subset(
