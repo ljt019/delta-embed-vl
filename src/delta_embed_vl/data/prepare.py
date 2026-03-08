@@ -39,6 +39,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _IMAGE_TOKEN = re.compile(r"<image>\s*")
 _MIN_CHUNK_CHARS = 100
 _MAX_CAULDRON_TURNS_PER_ROW = 4
+_GLOBAL_IMAGE_LONGEST_EDGE_CAP: int | None = 1024
 
 _PREPARED_COLUMNS = {
     "source": [],
@@ -53,6 +54,39 @@ ImageLike = Image.Image | dict[str, Any] | str | Path | None
 
 class CauldronTurn(dict[str, str]):
     pass
+
+
+def _image_cap_cache_suffix() -> str:
+    if _GLOBAL_IMAGE_LONGEST_EDGE_CAP is None:
+        return "_imgcap-original"
+    return f"_imgcap{_GLOBAL_IMAGE_LONGEST_EDGE_CAP}"
+
+
+def _resize_image_to_max_longest_edge(
+    image: Image.Image,
+    *,
+    max_longest_edge: int,
+) -> Image.Image:
+    width, height = image.size
+    longest_edge = max(width, height)
+    if longest_edge <= max_longest_edge:
+        return image
+
+    scale = max_longest_edge / longest_edge
+    resized_size = (
+        max(1, round(width * scale)),
+        max(1, round(height * scale)),
+    )
+    return image.resize(resized_size, Image.Resampling.BICUBIC)
+
+
+def _apply_image_cap(image: Image.Image) -> Image.Image:
+    if _GLOBAL_IMAGE_LONGEST_EDGE_CAP is None:
+        return image
+    return _resize_image_to_max_longest_edge(
+        image,
+        max_longest_edge=_GLOBAL_IMAGE_LONGEST_EDGE_CAP,
+    )
 
 
 def resolve_image_path(image_path: str | Path) -> Path | None:
@@ -100,14 +134,14 @@ def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
         return None
 
     if isinstance(image, Image.Image):
-        return image.convert("RGB")
+        return _apply_image_cap(image.convert("RGB"))
 
     if isinstance(image, (str, Path)):
         resolved_path = resolve_image_path(image)
         if resolved_path is None:
             return None
         with Image.open(resolved_path) as loaded:
-            return loaded.convert("RGB")
+            return _apply_image_cap(loaded.convert("RGB"))
 
     image_bytes = image.get("bytes")
     if image_bytes is not None:
@@ -118,7 +152,7 @@ def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
         elif isinstance(image_bytes, list):
             image_bytes = bytes(image_bytes)
         with Image.open(io.BytesIO(image_bytes)) as loaded:
-            return loaded.convert("RGB")
+            return _apply_image_cap(loaded.convert("RGB"))
 
     image_path = image.get("path")
     if image_path:
@@ -126,7 +160,7 @@ def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
         if resolved_path is None:
             return None
         with Image.open(resolved_path) as loaded:
-            return loaded.convert("RGB")
+            return _apply_image_cap(loaded.convert("RGB"))
 
     return None
 
@@ -594,7 +628,13 @@ def prepare_cauldron_config(
     out_path = (
         _PREPARED_DIR
         / "cauldron"
-        / f"{versioned_name(config, limit=limit)}_student{student_max_length}"
+        # Prepared rows depend on the current image cap because fit checks and
+        # chunking run against the resized image seen by the student path.
+        / (
+            f"{versioned_name(config, limit=limit)}"
+            f"_student{student_max_length}"
+            f"{_image_cap_cache_suffix()}"
+        )
     )
     if _already_prepared(out_path):
         return _load_prepared_dataset(out_path)

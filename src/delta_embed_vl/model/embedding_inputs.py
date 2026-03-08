@@ -29,6 +29,10 @@ class EmbeddingInput:
 
 @lru_cache
 def get_teacher_processor() -> Qwen3VLProcessor:
+    print(
+        f"loading_teacher_processor model={_settings.teacher_model}",
+        flush=True,
+    )
     processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
@@ -38,11 +42,16 @@ def get_teacher_processor() -> Qwen3VLProcessor:
     )
     tokenizer = get_processor_tokenizer(processor)
     tokenizer.padding_side = "right"
+    print("teacher_processor_ready", flush=True)
     return processor
 
 
 @lru_cache
 def get_student_processor() -> Qwen3VLProcessor:
+    print(
+        f"loading_student_processor model={_settings.student_model}",
+        flush=True,
+    )
     processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
@@ -52,6 +61,7 @@ def get_student_processor() -> Qwen3VLProcessor:
     )
     tokenizer = get_processor_tokenizer(processor)
     tokenizer.padding_side = "left"
+    print("student_processor_ready", flush=True)
     return processor
 
 
