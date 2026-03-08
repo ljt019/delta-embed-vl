@@ -3,19 +3,21 @@ from typing import Any, cast
 from datasets import Dataset, Image, Sequence, load_dataset
 from huggingface_hub.utils import logging as hf_logging
 
+from delta_embed_vl.data.dataloader import create_multimodal_dataloader
+from delta_embed_vl.data.dataset import normalize_row
 from delta_embed_vl.data.download import (
     CAULDRON_CONFIGS,
     CAULDRON_ID,
     WIKIPEDIA_CONFIG,
     WIKIPEDIA_ID,
 )
-from delta_embed_vl.data.tdataloader import create_multimodal_dataloader
-from delta_embed_vl.data.tdataset import normalize_row
+from delta_embed_vl.data.prepare import prepare_dataset
 
 hf_logging.set_verbosity_error()
 
 _TEST_ROWS_PER_DATASET = 25
 _TEST_BATCH_SIZE = 4
+_TEST_MAX_LENGTH = 4096
 
 
 def _load_streaming_subset(
@@ -72,11 +74,25 @@ def _summarize_tensor_batch(batch: dict[str, Any]) -> dict[str, tuple[int, ...]]
 
 
 def main():
-    test_data = get_test_data()
-    print("dataset_sizes", [len(dataset) for _, dataset in test_data])
+    raw_test_data = get_test_data()
+    print("dataset_sizes", [len(dataset) for _, dataset in raw_test_data])
+    prepared_test_data = [
+        (
+            source,
+            prepare_dataset(
+                source,
+                raw_dataset,
+                student_max_length=_TEST_MAX_LENGTH,
+            ),
+        )
+        for source, raw_dataset in raw_test_data
+    ]
+    raw_datasets_by_source = {
+        source: raw_dataset for source, raw_dataset in raw_test_data
+    }
     total_normalized_samples = 0
 
-    for name, dataset in test_data:
+    for name, dataset in prepared_test_data:
         total_samples = 0
         zero_sample_rows = 0
         query_samples = 0
@@ -84,28 +100,29 @@ def main():
         image_only_documents = 0
         max_samples_per_row = 0
 
-        for row in dataset:
-            samples = normalize_row(row, source=name)
-            sample_count = len(samples)
+        raw_dataset = raw_datasets_by_source.get(name)
+        for row_idx, row in enumerate(dataset):
+            sample = normalize_row(
+                row,
+                raw_dataset=raw_dataset if name.startswith("cauldron/") else None,
+                row_index=row_idx,
+            )
+            sample_count = 1
             total_samples += sample_count
             total_normalized_samples += sample_count
             max_samples_per_row = max(max_samples_per_row, sample_count)
 
-            if sample_count == 0:
-                zero_sample_rows += 1
-
-            for sample in samples:
-                if sample.role == "query":
-                    query_samples += 1
-                else:
-                    document_samples += 1
-                    if sample.text is None and sample.image is not None:
-                        image_only_documents += 1
+            if sample.role == "query":
+                query_samples += 1
+            else:
+                document_samples += 1
+                if sample.text is None and sample.image is not None:
+                    image_only_documents += 1
 
         print(
             name,
             {
-                "rows": len(dataset),
+                "prepared_rows": len(dataset),
                 "total_samples": total_samples,
                 "zero_sample_rows": zero_sample_rows,
                 "query_samples": query_samples,
@@ -116,9 +133,11 @@ def main():
         )
 
     loader = create_multimodal_dataloader(
-        datasets=test_data,
+        datasets=prepared_test_data,
         batch_size=_TEST_BATCH_SIZE,
         shuffle=False,
+        max_length=_TEST_MAX_LENGTH,
+        raw_datasets_by_source=raw_datasets_by_source,
     )
 
     batch_count = 0
@@ -145,11 +164,12 @@ def main():
     print(
         "loader_summary",
         {
-            "source_datasets": len(test_data),
+            "source_datasets": len(prepared_test_data),
             "rows_per_dataset": _TEST_ROWS_PER_DATASET,
-            "total_rows": sum(len(dataset) for _, dataset in test_data),
+            "total_rows": sum(len(dataset) for _, dataset in prepared_test_data),
             "total_normalized_samples": total_normalized_samples,
             "batch_size": _TEST_BATCH_SIZE,
+            "max_length": _TEST_MAX_LENGTH,
             "batch_count": batch_count,
             "processed_samples": processed_samples,
             "first_batch_shapes": first_batch_shapes,

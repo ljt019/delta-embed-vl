@@ -9,7 +9,6 @@ from transformers import AutoProcessor, PreTrainedTokenizerBase, Qwen3VLProcesso
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.tokenization_utils_base import BatchEncoding
 
-from delta_embed_vl.data.media import ImageLike, coerce_image_to_rgb
 from delta_embed_vl.settings import Settings
 
 _settings = Settings()
@@ -24,7 +23,7 @@ DEFAULT_EMBED_INSTRUCTION = "Represent the user's input."
 @dataclass(frozen=True)
 class EmbeddingInput:
     text: str | None = None
-    image: ImageLike = None
+    image: Image.Image | None = None
     instruction: str = DEFAULT_EMBED_INSTRUCTION
 
 
@@ -72,10 +71,7 @@ def get_teacher_tokenizer() -> PreTrainedTokenizerBase:
 def _resolve_input(
     sample: EmbeddingInput,
 ) -> tuple[str | None, Image.Image | None, str]:
-    resolved_image = coerce_image_to_rgb(sample.image)
-    if sample.image is not None and resolved_image is None:
-        raise ValueError("Could not resolve image for embedding input.")
-    return sample.text, resolved_image, sample.instruction
+    return sample.text, sample.image, sample.instruction
 
 
 def _build_conversation(

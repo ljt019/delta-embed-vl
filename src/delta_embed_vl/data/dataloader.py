@@ -1,77 +1,77 @@
+from functools import partial
+from typing import cast
+
 import torch
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset
 from torch.utils.data import DataLoader
-from transformers import BaseImageProcessor, PreTrainedTokenizerBase
+from torch.utils.data import Dataset as TorchDataset
+from transformers import Qwen3VLProcessor
+
+from delta_embed_vl.data.dataset import (
+    MultimodalEmbeddingDataset,
+    NormalizedSample,
+)
+from delta_embed_vl.model.embedding_inputs import (
+    DEFAULT_EMBED_INSTRUCTION,
+    EmbeddingInput,
+    build_student_batch,
+    get_student_processor,
+)
 
 
-class Collator:
-    """Batches samples into tensors using a tokenizer and image processor.
-
-    Handles mixed-modality batches: text-only samples get tokenized,
-    image samples get processed, and an image_mask tracks which batch
-    entries have images so the model can route accordingly.
-    """
-
-    def __init__(
-        self,
-        tokenizer: PreTrainedTokenizerBase,
-        image_processor: BaseImageProcessor,
-        max_length: int = 512,
-    ) -> None:
-        self.tokenizer = tokenizer
-        self.image_processor = image_processor
-        self.max_length = max_length
-
-    def __call__(self, batch: list[dict]) -> dict[str, torch.Tensor | None]:
-        texts = [s["text"] or "" for s in batch]
-        images = [s.get("image") for s in batch]
-
-        encoded = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors="pt",
-        )
-
-        image_mask = torch.tensor([img is not None for img in images])
-
-        pixel_values = None
-        valid_images = [img for img in images if img is not None]
-        if valid_images:
-            processed = self.image_processor(valid_images, return_tensors="pt")
-            pixel_values = processed["pixel_values"]
-
-        return {
-            "input_ids": encoded["input_ids"],
-            "attention_mask": encoded["attention_mask"],
-            "pixel_values": pixel_values,
-            "image_mask": image_mask,
-        }
-
-
-def create_dataloader(
-    datasets: list[Dataset],
+def create_multimodal_dataloader(
+    datasets: list[tuple[str, Dataset]],
     *,
-    tokenizer: PreTrainedTokenizerBase,
-    image_processor: BaseImageProcessor,
+    batch_size: int = 4,
+    shuffle: bool = False,
     max_length: int = 512,
-    batch_size: int = 32,
-    shuffle: bool = True,
-    num_workers: int = 4,
+    raw_datasets_by_source: dict[str, Dataset] | None = None,
 ) -> DataLoader:
-    """Build a DataLoader from one or more HF Arrow datasets.
+    processor = get_student_processor()
+    dataset = MultimodalEmbeddingDataset(
+        datasets,
+        raw_datasets_by_source=raw_datasets_by_source,
+    )
 
-    Datasets are concatenated and served via memory-mapping — no full
-    materialization in RAM.
-    """
-    combined = concatenate_datasets(datasets)
-    combined.set_format("python")
     return DataLoader(
-        combined,  # type: ignore[arg-type]
+        # `MultimodalEmbeddingDataset` is a map-style dataset and works with
+        # `DataLoader` at runtime, but it is duck-typed rather than a literal
+        # `torch.utils.data.Dataset` subclass, so we cast for the type checker.
+        dataset=cast(TorchDataset[NormalizedSample], dataset),
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=Collator(tokenizer, image_processor, max_length),
-        pin_memory=True,
+        collate_fn=partial(
+            collate_samples,
+            processor=processor,
+            max_length=max_length,
+        ),
+    )
+
+
+def collate_samples(
+    samples: list[NormalizedSample],
+    *,
+    processor: Qwen3VLProcessor,
+    max_length: int,
+) -> dict[str, torch.Tensor]:
+    embedding_inputs = [_to_embedding_input(sample) for sample in samples]
+
+    # Let the existing Qwen batching path do the real work:
+    # tokenization, multimodal packing, padding, truncation, etc.
+    batch = build_student_batch(
+        processor,
+        embedding_inputs,
+        max_length=max_length,
+    )
+
+    # Return a plain dict so the training loop can move tensors
+    # to device later without caring about HF wrapper types.
+    return {key: value for key, value in batch.items()}
+
+
+def _to_embedding_input(sample: NormalizedSample) -> EmbeddingInput:
+    return EmbeddingInput(
+        text=sample.text,
+        image=sample.image,
+        instruction=DEFAULT_EMBED_INSTRUCTION,
     )
