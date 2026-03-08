@@ -5,14 +5,12 @@ import json
 import logging
 import re
 import shutil
-from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from datasets import Dataset
 from PIL import Image
-from transformers import Qwen3VLProcessor
 
 from delta_embed_vl.artifacts import versioned_name
 from delta_embed_vl.data.download import (
@@ -23,23 +21,23 @@ from delta_embed_vl.data.download import (
 )
 from delta_embed_vl.model.embedding_inputs import (
     EmbeddingInput,
-    count_teacher_processed_tokens,
-    count_teacher_prompt_tokens,
     get_student_processor,
-    sample_fits_student,
-    teacher_prompt_token_limit,
+    student_batch_fit_flags,
 )
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
+_SETTINGS = Settings()
 
-_PREPARED_DIR = Settings().data_dir / "prepared"
+_PREPARED_DIR = _SETTINGS.data_dir / "prepared"
 _EMPTY_DATASET_MARKER = "_empty_dataset.json"
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _IMAGE_TOKEN = re.compile(r"<image>\s*")
 _MIN_CHUNK_CHARS = 100
 _MAX_CAULDRON_TURNS_PER_ROW = 4
 _GLOBAL_IMAGE_LONGEST_EDGE_CAP: int | None = 1024
+_CAULDRON_STUDENT_BATCH_SIZE = 8
+_WIKIPEDIA_STUDENT_BATCH_SIZE = 32
 
 _PREPARED_COLUMNS = {
     "source": [],
@@ -122,7 +120,7 @@ def _resolve_cached_image_path(normalized_path: str) -> str | None:
         if suffix in seen:
             continue
         seen.add(suffix)
-        resolved = next((Settings().data_dir / "raw").glob(f"**/{suffix}"), None)
+        resolved = next((_SETTINGS.data_dir / "raw").glob(f"**/{suffix}"), None)
         if resolved is not None and resolved.exists():
             return str(resolved)
 
@@ -204,106 +202,7 @@ def _split_oversized_span(text: str, *, max_chars: int) -> list[str]:
     return chunks
 
 
-def _fits_teacher_prompt(text: str) -> bool:
-    return (
-        count_teacher_prompt_tokens(EmbeddingInput(text=text))
-        <= teacher_prompt_token_limit()
-    )
-
-
-def _fits_teacher_processed(sample: EmbeddingInput) -> bool:
-    return count_teacher_processed_tokens(sample) <= teacher_prompt_token_limit()
-
-
-def _split_raw_safe(text: str, *, fits: Callable[[str], bool]) -> list[str]:
-    chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        low = 1
-        high = len(text) - start
-        best = 0
-
-        while low <= high:
-            mid = (low + high) // 2
-            candidate = text[start : start + mid].strip()
-            if candidate and fits(candidate):
-                best = mid
-                low = mid + 1
-            else:
-                high = mid - 1
-
-        if best == 0:
-            best = 1
-
-        chunk = text[start : start + best].strip()
-        if chunk:
-            chunks.append(chunk)
-        start += best
-
-    return chunks
-
-
-def _ensure_text_safe(text: str, *, fits: Callable[[str], bool]) -> list[str]:
-    if fits(text):
-        return [text]
-
-    words = text.split()
-    if len(words) <= 1:
-        return _split_raw_safe(text, fits=fits)
-
-    chunks: list[str] = []
-    current: list[str] = []
-    for word in words:
-        if not current:
-            if fits(word):
-                current = [word]
-            else:
-                chunks.extend(_split_raw_safe(word, fits=fits))
-            continue
-
-        candidate = " ".join([*current, word])
-        if fits(candidate):
-            current.append(word)
-            continue
-
-        chunks.append(" ".join(current))
-        if fits(word):
-            current = [word]
-        else:
-            chunks.extend(_split_raw_safe(word, fits=fits))
-            current = []
-
-    if current:
-        chunks.append(" ".join(current))
-
-    return chunks
-
-
-def _ensure_teacher_safe(text: str) -> list[str]:
-    return _ensure_text_safe(text, fits=_fits_teacher_prompt)
-
-
-def _ensure_multimodal_joint_safe(
-    text: str,
-    image: Image.Image,
-    *,
-    processor: Qwen3VLProcessor,
-    max_length: int,
-) -> list[str]:
-    return _ensure_text_safe(
-        text,
-        fits=lambda candidate: (
-            _fits_teacher_processed(EmbeddingInput(text=candidate, image=image))
-            and sample_fits_student(
-                processor,
-                EmbeddingInput(text=candidate, image=image),
-                max_length=max_length,
-            )
-        ),
-    )
-
-
-def _chunk_text(text: str, *, chunk_chars: int = 1200) -> list[str]:
+def _chunk_text(text: str, *, chunk_chars: int = 4096) -> list[str]:
     text = " ".join(text.split()).strip()
     if not text:
         return []
@@ -332,11 +231,7 @@ def _chunk_text(text: str, *, chunk_chars: int = 1200) -> list[str]:
         else:
             chunks.append(tail)
 
-    safe_chunks: list[str] = []
-    for chunk in chunks:
-        safe_chunks.extend(_ensure_teacher_safe(chunk))
-
-    return safe_chunks
+    return chunks
 
 
 def _normalize_cauldron_text(text: str) -> str | None:
@@ -446,28 +341,21 @@ def _validate_cauldron_turns(
     return validated_turns, images
 
 
-def _prepare_cauldron_batch(
-    batch: dict[str, list[Any]],
-    indices: list[int],
+def _prepare_cauldron_dataset(
+    raw_dataset: Dataset,
     *,
-    config: str,
-    processor: Qwen3VLProcessor,
+    source: str,
     student_max_length: int,
-) -> dict[str, list[Any]]:
+) -> Dataset:
     rows = _empty_rows()
-    source = f"cauldron/{config}"
+    processor = get_student_processor()
 
-    for source_row, texts, images in zip(
-        indices,
-        batch["texts"],
-        batch["images"],
-        strict=False,
-    ):
+    for source_row, raw_row in enumerate(raw_dataset):
         turns, raw_images = _validate_cauldron_turns(
             source=source,
             source_row=source_row,
-            texts=texts,
-            images=images,
+            texts=raw_row["texts"],
+            images=raw_row["images"],
         )
 
         resolved_images: list[tuple[int, Image.Image]] = []
@@ -480,47 +368,46 @@ def _prepare_cauldron_batch(
         if not resolved_images:
             continue
 
-        emitted_any = False
+        candidates_meta: list[tuple[str, str, int]] = []
+        samples: list[EmbeddingInput] = []
+
         for turn in turns:
             query_text = _normalize_cauldron_text(turn["user"])
             document_text = _normalize_cauldron_text(turn["assistant"])
 
             for image_index, image in resolved_images:
                 if query_text is not None:
-                    query_chunks = _ensure_multimodal_joint_safe(
-                        query_text,
-                        image,
-                        processor=processor,
-                        max_length=student_max_length,
-                    )
-                    for chunk in query_chunks:
-                        _append_prepared_row(
-                            rows,
-                            source=source,
-                            role="query",
-                            text=chunk,
-                            source_row=source_row,
-                            image_index=image_index,
-                        )
-                        emitted_any = True
-
+                    candidates_meta.append(("query", query_text, image_index))
+                    samples.append(EmbeddingInput(text=query_text, image=image))
                 if document_text is not None:
-                    document_chunks = _ensure_multimodal_joint_safe(
-                        document_text,
-                        image,
-                        processor=processor,
-                        max_length=student_max_length,
-                    )
-                    for chunk in document_chunks:
-                        _append_prepared_row(
-                            rows,
-                            source=source,
-                            role="document",
-                            text=chunk,
-                            source_row=source_row,
-                            image_index=image_index,
-                        )
-                        emitted_any = True
+                    candidates_meta.append(("document", document_text, image_index))
+                    samples.append(EmbeddingInput(text=document_text, image=image))
+
+        emitted_any = False
+        if samples:
+            student_ok = student_batch_fit_flags(
+                processor,
+                samples,
+                max_length=student_max_length,
+                batch_size=_CAULDRON_STUDENT_BATCH_SIZE,
+            )
+
+            for (role, text, image_index), is_student_ok in zip(
+                candidates_meta,
+                student_ok,
+                strict=True,
+            ):
+                if not is_student_ok:
+                    continue
+                _append_prepared_row(
+                    rows,
+                    source=source,
+                    role=role,
+                    text=text,
+                    source_row=source_row,
+                    image_index=image_index,
+                )
+                emitted_any = True
 
         if emitted_any:
             continue
@@ -535,7 +422,7 @@ def _prepare_cauldron_batch(
                 image_index=image_index,
             )
 
-    return rows
+    return Dataset.from_dict(rows)
 
 
 def load_prepared_cauldron_embedding_input(
@@ -572,36 +459,49 @@ def load_prepared_cauldron_embedding_input(
     return EmbeddingInput(text=text, image=image)
 
 
+def _filter_wikipedia_student_fit(
+    dataset: Dataset,
+    *,
+    student_max_length: int,
+) -> Dataset:
+    processor = get_student_processor()
+    samples = [EmbeddingInput(text=row["text"]) for row in dataset]
+    flags = student_batch_fit_flags(
+        processor,
+        samples,
+        max_length=student_max_length,
+        batch_size=_WIKIPEDIA_STUDENT_BATCH_SIZE,
+    )
+    keep_indices = [i for i, ok in enumerate(flags) if ok]
+    if len(keep_indices) == len(dataset):
+        return dataset
+    return dataset.select(keep_indices)
+
+
 def prepare_dataset(
     source: str,
     raw_dataset: Dataset,
     *,
-    student_max_length: int = 8192,
+    student_max_length: int = _SETTINGS.student_max_length,
 ) -> Dataset:
     if source == "wikipedia":
-        return raw_dataset.map(
+        chunked = raw_dataset.map(
             _prepare_wikipedia_batch,
             batched=True,
             with_indices=True,
             batch_size=256,
             remove_columns=raw_dataset.column_names,
         )
+        return _filter_wikipedia_student_fit(
+            chunked,
+            student_max_length=student_max_length,
+        )
 
     if source.startswith("cauldron/"):
-        config = source.split("/", maxsplit=1)[1]
-        processor = get_student_processor()
-        return raw_dataset.map(
-            lambda batch, indices: _prepare_cauldron_batch(
-                batch,
-                indices,
-                config=config,
-                processor=processor,
-                student_max_length=student_max_length,
-            ),
-            batched=True,
-            with_indices=True,
-            batch_size=32,
-            remove_columns=raw_dataset.column_names,
+        return _prepare_cauldron_dataset(
+            raw_dataset,
+            source=source,
+            student_max_length=student_max_length,
         )
 
     raise ValueError(f"Unsupported source: {source}")
@@ -623,7 +523,7 @@ def prepare_cauldron_config(
     config: str,
     *,
     limit: int | None = None,
-    student_max_length: int = 8192,
+    student_max_length: int = _SETTINGS.student_max_length,
 ) -> Dataset:
     out_path = (
         _PREPARED_DIR
@@ -653,7 +553,7 @@ def prepare_cauldron_config(
 def prepare_cauldron(
     *,
     limit: int | None = None,
-    student_max_length: int = 8192,
+    student_max_length: int = _SETTINGS.student_max_length,
 ) -> list[Dataset]:
     return [
         prepare_cauldron_config(
@@ -669,7 +569,7 @@ def prepare_data(
     download_first: bool = False,
     *,
     limit: int | None = None,
-    student_max_length: int = 8192,
+    student_max_length: int = _SETTINGS.student_max_length,
 ) -> tuple[Dataset, list[Dataset]]:
     if download_first:
         download_data(limit=limit)

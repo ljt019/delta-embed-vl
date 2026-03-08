@@ -1,4 +1,8 @@
-from datasets import Dataset, Image, Sequence, load_dataset
+import shutil
+from pathlib import Path
+from typing import Any, cast
+
+from datasets import Dataset, Image, Sequence, concatenate_datasets, load_dataset
 
 from delta_embed_vl.settings import Settings
 
@@ -73,6 +77,7 @@ def load_raw_cauldron(config: str, *, limit: int | None = None) -> Dataset:
 ### Private
 
 _RAW_DATA_DIR = Settings().data_dir / "raw"
+_RAW_SUBSET_CACHE_DIR = Settings().data_dir / "raw_subsets"
 
 _DATASET_REGISTRY = {
     "wikipedia": ("wikimedia/wikipedia", WIKIPEDIA_CONFIG, "train"),
@@ -84,24 +89,143 @@ _DATASET_REGISTRY = {
 
 
 def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
-    """Load a raw dataset. If limit is set, load only the first N rows."""
+    """Load a raw dataset. If limit is set, stream and cache only the first N rows."""
+    if limit is not None:
+        if limit < 1:
+            raise ValueError("limit must be at least 1.")
+        return _load_raw_subset(name, rows=limit)
+    return _load_full_raw_data(name)
+
+
+def _get_dataset_entry(name: str) -> tuple[str, str, str]:
     if name not in _DATASET_REGISTRY:
         supported_names = ", ".join(sorted(_DATASET_REGISTRY.keys()))
         raise ValueError(f"Unknown dataset name: {name}. Supported: {supported_names}")
+    return _DATASET_REGISTRY[name]
 
-    dataset_id, config, split = _DATASET_REGISTRY[name]
 
-    if limit is not None:
-        split = f"{split}[:{limit}]"
-
+def _load_full_raw_data(name: str) -> Dataset:
+    dataset_id, config, split = _get_dataset_entry(name)
     dataset = load_dataset(
         dataset_id,
         config,
         split=split,
         cache_dir=str(_RAW_DATA_DIR / name),
     )
+    return _cast_cauldron_images(name, dataset)
 
+
+def _load_raw_subset(name: str, *, rows: int) -> Dataset:
+    dataset_id, config, _ = _get_dataset_entry(name)
+    cache_dir = _subset_cache_dir(name)
+    cached_dataset: Dataset | None = None
+    cached_rows = 0
+
+    if _is_saved_dataset(cache_dir):
+        cached_dataset = Dataset.load_from_disk(str(cache_dir))
+        cached_rows = len(cached_dataset)
+
+    if cached_dataset is not None:
+        if cached_rows >= rows:
+            print(
+                "raw_subset_cache_hit",
+                {
+                    "name": name,
+                    "requested_rows": rows,
+                    "cached_rows": cached_rows,
+                    "path": str(cache_dir),
+                },
+            )
+            if cached_rows == rows:
+                return cached_dataset
+            return cached_dataset.select(range(rows))
+        print(
+            "raw_subset_cache_extend",
+            {
+                "name": name,
+                "requested_rows": rows,
+                "cached_rows": cached_rows,
+                "missing_rows": rows - cached_rows,
+                "path": str(cache_dir),
+            },
+        )
+    else:
+        print(
+            "raw_subset_cache_miss",
+            {
+                "name": name,
+                "requested_rows": rows,
+                "path": str(cache_dir),
+            },
+        )
+
+    stream = load_dataset(
+        dataset_id,
+        config,
+        split="train",
+        streaming=True,
+    )
     if name.startswith("cauldron/"):
-        dataset = dataset.cast_column("images", Sequence(Image(decode=False)))
+        stream = stream.cast_column(
+            "images",
+            cast(Any, Sequence(Image(decode=False))),
+        )
 
-    return dataset
+    if cached_rows > 0:
+        stream = stream.skip(cached_rows)
+
+    fetched_rows = list(stream.take(rows - cached_rows))
+    if not fetched_rows and cached_dataset is None:
+        raise ValueError(f"Failed to load any rows for dataset_id={dataset_id} config={config}.")
+
+    if cached_dataset is None:
+        dataset = Dataset.from_list(fetched_rows)
+    elif not fetched_rows:
+        dataset = cached_dataset
+    else:
+        dataset = concatenate_datasets(
+            [
+                cached_dataset,
+                Dataset.from_list(fetched_rows),
+            ]
+        )
+
+    _save_subset_cache(cache_dir, dataset)
+    print(
+        "raw_subset_cache_saved",
+        {
+            "name": name,
+            "requested_rows": rows,
+            "cached_rows": len(dataset),
+            "path": str(cache_dir),
+        },
+    )
+    if len(dataset) == rows:
+        return dataset
+    return dataset.select(range(rows))
+
+
+def _cast_cauldron_images(name: str, dataset: Dataset) -> Dataset:
+    if not name.startswith("cauldron/"):
+        return dataset
+    return dataset.cast_column("images", Sequence(Image(decode=False)))
+
+
+def _subset_cache_dir(name: str) -> Path:
+    return _RAW_SUBSET_CACHE_DIR / name
+
+
+def _is_saved_dataset(path: Path) -> bool:
+    return (path / "dataset_info.json").exists() or (path / "state.json").exists()
+
+
+def _save_subset_cache(cache_dir: Path, dataset: Dataset) -> None:
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = cache_dir.with_name(f"{cache_dir.name}.tmp")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+
+    dataset.save_to_disk(str(temp_dir))
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+    temp_dir.replace(cache_dir)

@@ -4,6 +4,7 @@ from PIL import Image
 
 from delta_embed_vl.model.embedding_inputs import EmbeddingInput
 from delta_embed_vl.model.student import embed, get_embedding_dim, load_student
+from delta_embed_vl.settings import Settings
 
 
 def main() -> None:
@@ -13,7 +14,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--text", default="I love dogs")
     parser.add_argument("--image-size", type=int, default=None)
-    parser.add_argument("--max-length", type=int, default=8192)
+    parser.add_argument("--max-length", type=int, default=Settings().student_max_length)
     args = parser.parse_args()
 
     image = None

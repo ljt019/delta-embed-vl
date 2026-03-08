@@ -1,18 +1,15 @@
 import argparse
-import shutil
-from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from datasets import Dataset, Image, Sequence, concatenate_datasets, load_dataset
+from datasets import Dataset
 from huggingface_hub.utils import logging as hf_logging
 
 from delta_embed_vl.data.dataloader import create_multimodal_dataloader
 from delta_embed_vl.data.dataset import normalize_row
 from delta_embed_vl.data.download import (
     CAULDRON_CONFIGS,
-    CAULDRON_ID,
-    WIKIPEDIA_CONFIG,
-    WIKIPEDIA_ID,
+    load_raw_cauldron,
+    load_raw_wikipedia,
 )
 from delta_embed_vl.data.prepare import prepare_dataset
 from delta_embed_vl.settings import Settings
@@ -21,132 +18,7 @@ hf_logging.set_verbosity_error()
 
 _DEFAULT_TEST_ROWS_PER_DATASET = 25
 _TEST_BATCH_SIZE = 4
-_TEST_MAX_LENGTH = 4096
-_RAW_SUBSET_CACHE_DIR = Settings().data_dir / "check_dataloader_cache"
-
-
-def _stream_subset_cache_dir(
-    dataset_id: str,
-    config: str,
-) -> Path:
-    safe_dataset_id = dataset_id.replace("/", "--")
-    safe_config = config.replace("/", "--")
-    return _RAW_SUBSET_CACHE_DIR / safe_dataset_id / safe_config
-
-
-def _is_saved_dataset(path: Path) -> bool:
-    return (path / "dataset_info.json").exists() or (path / "state.json").exists()
-
-
-def _save_subset_cache(cache_dir: Path, dataset: Dataset) -> None:
-    cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    temp_dir = cache_dir.with_name(f"{cache_dir.name}.tmp")
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-
-    dataset.save_to_disk(str(temp_dir))
-    if cache_dir.exists():
-        shutil.rmtree(cache_dir)
-    temp_dir.replace(cache_dir)
-
-
-def _load_streaming_subset(
-    dataset_id: str,
-    config: str,
-    *,
-    rows: int,
-) -> Dataset:
-    cache_dir = _stream_subset_cache_dir(dataset_id, config)
-    cached_dataset: Dataset | None = None
-    cached_rows = 0
-
-    if _is_saved_dataset(cache_dir):
-        cached_dataset = Dataset.load_from_disk(str(cache_dir))
-        cached_rows = len(cached_dataset)
-
-    if cached_dataset is not None:
-        if cached_rows >= rows:
-            print(
-                "raw_subset_cache_hit",
-                {
-                    "dataset_id": dataset_id,
-                    "config": config,
-                    "requested_rows": rows,
-                    "cached_rows": cached_rows,
-                },
-            )
-            if cached_rows == rows:
-                return cached_dataset
-            return cached_dataset.select(range(rows))
-
-        print(
-            "raw_subset_cache_extend",
-            {
-                "dataset_id": dataset_id,
-                "config": config,
-                "requested_rows": rows,
-                "cached_rows": cached_rows,
-                "missing_rows": rows - cached_rows,
-            },
-        )
-    else:
-        print(
-            "raw_subset_cache_miss",
-            {
-                "dataset_id": dataset_id,
-                "config": config,
-                "requested_rows": rows,
-            },
-        )
-
-    stream = load_dataset(
-        dataset_id,
-        config,
-        split="train",
-        streaming=True,
-    )
-    if dataset_id == CAULDRON_ID:
-        stream = stream.cast_column(
-            "images",
-            cast(Any, Sequence(Image(decode=False))),
-        )
-
-    if cached_rows > 0:
-        stream = stream.skip(cached_rows)
-
-    missing_rows = rows - cached_rows
-    fetched_rows = list(stream.take(missing_rows))
-    if not fetched_rows and cached_dataset is None:
-        raise ValueError(
-            f"Failed to load any rows for dataset_id={dataset_id} config={config}."
-        )
-
-    if cached_dataset is None:
-        dataset = Dataset.from_list(fetched_rows)
-    elif not fetched_rows:
-        dataset = cached_dataset
-    else:
-        dataset = concatenate_datasets(
-            [
-                cached_dataset,
-                Dataset.from_list(fetched_rows),
-            ]
-        )
-
-    _save_subset_cache(cache_dir, dataset)
-    print(
-        "raw_subset_cache_saved",
-        {
-            "dataset_id": dataset_id,
-            "config": config,
-            "cached_rows": len(dataset),
-            "requested_rows": rows,
-            "path": str(cache_dir),
-        },
-    )
-    if len(dataset) == rows:
-        return dataset
-    return dataset.select(range(rows))
+_TEST_MAX_LENGTH = Settings().student_max_length
 
 
 def _parse_args() -> argparse.Namespace:
@@ -173,21 +45,13 @@ def get_test_data(*, rows: int) -> list[tuple[str, Dataset]]:
     datasets = [
         (
             "wikipedia",
-            _load_streaming_subset(
-                WIKIPEDIA_ID,
-                WIKIPEDIA_CONFIG,
-                rows=rows,
-            ),
+            load_raw_wikipedia(limit=rows),
         )
     ]
     datasets.extend(
         (
             f"cauldron/{config}",
-            _load_streaming_subset(
-                CAULDRON_ID,
-                config,
-                rows=rows,
-            ),
+            load_raw_cauldron(config, limit=rows),
         )
         for config in CAULDRON_CONFIGS
     )

@@ -12,10 +12,10 @@ from torch.optim import AdamW
 from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
 
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
-from delta_embed_vl.data.preprocess import (
-    load_cauldron_embedding_input,
-    preprocess_cauldron,
-    preprocess_wikipedia,
+from delta_embed_vl.data.prepare import (
+    load_prepared_cauldron_embedding_input,
+    prepare_cauldron,
+    prepare_wikipedia,
 )
 from delta_embed_vl.model.embedding_inputs import (
     EmbeddingInput,
@@ -25,10 +25,12 @@ from delta_embed_vl.model.embedding_inputs import (
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
 from delta_embed_vl.model.teacher import TeacherEmbedder, load_teacher
+from delta_embed_vl.settings import Settings
 from delta_embed_vl.training.losses import cosine_distill_loss
 
 logger = logging.getLogger(__name__)
 _PROGRESS_LOG_INTERVAL_S = 30.0
+_SETTINGS = Settings()
 
 
 @dataclass(frozen=True)
@@ -56,11 +58,11 @@ def _auto_student_device() -> str:
 def _build_sources(
     *,
     limit: int | None = None,
-    max_length: int = 8192,
+    max_length: int = _SETTINGS.student_max_length,
 ) -> tuple[list[PreparedSource], int]:
     """Load processed data and resolve each global index back to an example."""
-    wiki_ds = preprocess_wikipedia(limit=limit)
-    cauldron_datasets = preprocess_cauldron(
+    wiki_ds = prepare_wikipedia(limit=limit)
+    cauldron_datasets = prepare_cauldron(
         limit=limit,
         student_max_length=max_length,
     )
@@ -110,7 +112,7 @@ def _build_sources(
 
             row = dataset[local_index]
             assert raw_dataset is not None
-            return load_cauldron_embedding_input(
+            return load_prepared_cauldron_embedding_input(
                 raw_dataset,
                 row,
                 config=config,
@@ -185,7 +187,11 @@ def _collate_with_fallback(
 
     if not valid_samples:
         return [], None, skipped_origins
-    return valid_samples, _collate(valid_samples, processor, max_length), skipped_origins
+    return (
+        valid_samples,
+        _collate(valid_samples, processor, max_length),
+        skipped_origins,
+    )
 
 
 def _embed_teacher_targets(
@@ -217,7 +223,7 @@ def train(
     batch_size: int = 32,
     lr: float = 2e-5,
     warmup_ratio: float = 0.1,
-    max_length: int = 8192,
+    max_length: int = _SETTINGS.student_max_length,
     grad_accum_steps: int = 1,
     save_dir: str = "checkpoints",
     teacher_device: str | None = None,
@@ -359,7 +365,10 @@ def train(
             now_s = time.monotonic()
             batch_elapsed_s = now_s - batch_start_s
 
-            if num_batches == 1 or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S:
+            if (
+                num_batches == 1
+                or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S
+            ):
                 elapsed_s = now_s - epoch_start_s
                 avg_batch_s = elapsed_s / max(num_batches, 1)
                 remaining_batches = max(batches_per_epoch - num_batches, 0)
