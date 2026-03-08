@@ -1,7 +1,8 @@
+import argparse
 from pathlib import Path
 from typing import Any, cast
 
-from datasets import Dataset, Image, Sequence, load_dataset
+from datasets import Dataset, Image, Sequence, concatenate_datasets, load_dataset
 from huggingface_hub.utils import logging as hf_logging
 
 from delta_embed_vl.data.dataloader import create_multimodal_dataloader
@@ -17,7 +18,7 @@ from delta_embed_vl.settings import Settings
 
 hf_logging.set_verbosity_error()
 
-_TEST_ROWS_PER_DATASET = 25
+_DEFAULT_TEST_ROWS_PER_DATASET = 25
 _TEST_BATCH_SIZE = 4
 _TEST_MAX_LENGTH = 4096
 _RAW_SUBSET_CACHE_DIR = Settings().data_dir / "check_dataloader_cache"
@@ -26,16 +27,19 @@ _RAW_SUBSET_CACHE_DIR = Settings().data_dir / "check_dataloader_cache"
 def _stream_subset_cache_dir(
     dataset_id: str,
     config: str,
-    *,
-    rows: int,
 ) -> Path:
     safe_dataset_id = dataset_id.replace("/", "--")
     safe_config = config.replace("/", "--")
-    return _RAW_SUBSET_CACHE_DIR / safe_dataset_id / safe_config / f"rows{rows}"
+    return _RAW_SUBSET_CACHE_DIR / safe_dataset_id / safe_config
 
 
 def _is_saved_dataset(path: Path) -> bool:
     return (path / "dataset_info.json").exists() or (path / "state.json").exists()
+
+
+def _save_subset_cache(cache_dir: Path, dataset: Dataset) -> None:
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_to_disk(str(cache_dir))
 
 
 def _load_streaming_subset(
@@ -44,30 +48,49 @@ def _load_streaming_subset(
     *,
     rows: int,
 ) -> Dataset:
-    cache_dir = _stream_subset_cache_dir(
-        dataset_id,
-        config,
-        rows=rows,
-    )
+    cache_dir = _stream_subset_cache_dir(dataset_id, config)
+    cached_dataset: Dataset | None = None
+    cached_rows = 0
+
     if _is_saved_dataset(cache_dir):
+        cached_dataset = Dataset.load_from_disk(str(cache_dir))
+        cached_rows = len(cached_dataset)
+
+    if cached_dataset is not None:
+        if cached_rows >= rows:
+            print(
+                "raw_subset_cache_hit",
+                {
+                    "dataset_id": dataset_id,
+                    "config": config,
+                    "requested_rows": rows,
+                    "cached_rows": cached_rows,
+                },
+            )
+            if cached_rows == rows:
+                return cached_dataset
+            return cached_dataset.select(range(rows))
+
         print(
-            "raw_subset_cache_hit",
+            "raw_subset_cache_extend",
             {
                 "dataset_id": dataset_id,
                 "config": config,
-                "rows": rows,
+                "requested_rows": rows,
+                "cached_rows": cached_rows,
+                "missing_rows": rows - cached_rows,
             },
         )
-        return Dataset.load_from_disk(str(cache_dir))
+    else:
+        print(
+            "raw_subset_cache_miss",
+            {
+                "dataset_id": dataset_id,
+                "config": config,
+                "requested_rows": rows,
+            },
+        )
 
-    print(
-        "raw_subset_cache_miss",
-        {
-            "dataset_id": dataset_id,
-            "config": config,
-            "rows": rows,
-        },
-    )
     stream = load_dataset(
         dataset_id,
         config,
@@ -79,29 +102,73 @@ def _load_streaming_subset(
             "images",
             cast(Any, Sequence(Image(decode=False))),
         )
-    dataset = Dataset.from_list(list(stream.take(rows)))
-    cache_dir.parent.mkdir(parents=True, exist_ok=True)
-    dataset.save_to_disk(str(cache_dir))
+
+    if cached_rows > 0:
+        stream = stream.skip(cached_rows)
+
+    missing_rows = rows - cached_rows
+    fetched_rows = list(stream.take(missing_rows))
+    if not fetched_rows and cached_dataset is None:
+        raise ValueError(
+            f"Failed to load any rows for dataset_id={dataset_id} config={config}."
+        )
+
+    if cached_dataset is None:
+        dataset = Dataset.from_list(fetched_rows)
+    elif not fetched_rows:
+        dataset = cached_dataset
+    else:
+        dataset = concatenate_datasets(
+            [
+                cached_dataset,
+                Dataset.from_list(fetched_rows),
+            ]
+        )
+
+    _save_subset_cache(cache_dir, dataset)
     print(
         "raw_subset_cache_saved",
         {
             "dataset_id": dataset_id,
             "config": config,
-            "rows": len(dataset),
+            "cached_rows": len(dataset),
+            "requested_rows": rows,
             "path": str(cache_dir),
         },
     )
-    return dataset
+    if len(dataset) == rows:
+        return dataset
+    return dataset.select(range(rows))
 
 
-def get_test_data() -> list[tuple[str, Dataset]]:
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=_DEFAULT_TEST_ROWS_PER_DATASET,
+        help=(
+            "Rows to load per dataset. Uses and grows the local raw subset cache "
+            f"from a default of {_DEFAULT_TEST_ROWS_PER_DATASET}."
+        ),
+    )
+    return parser.parse_args()
+
+
+def _resolve_limit(limit: int) -> int:
+    if limit < 1:
+        raise ValueError("--limit must be at least 1.")
+    return limit
+
+
+def get_test_data(*, rows: int) -> list[tuple[str, Dataset]]:
     datasets = [
         (
             "wikipedia",
             _load_streaming_subset(
                 WIKIPEDIA_ID,
                 WIKIPEDIA_CONFIG,
-                rows=_TEST_ROWS_PER_DATASET,
+                rows=rows,
             ),
         )
     ]
@@ -111,7 +178,7 @@ def get_test_data() -> list[tuple[str, Dataset]]:
             _load_streaming_subset(
                 CAULDRON_ID,
                 config,
-                rows=_TEST_ROWS_PER_DATASET,
+                rows=rows,
             ),
         )
         for config in CAULDRON_CONFIGS
@@ -128,7 +195,21 @@ def _summarize_tensor_batch(batch: dict[str, Any]) -> dict[str, tuple[int, ...]]
 
 
 def main():
-    raw_test_data = get_test_data()
+    args = _parse_args()
+    limit = _resolve_limit(args.limit)
+
+    print(
+        "check_dataloader_config",
+        {
+            "requested_limit": args.limit,
+            "effective_limit": limit,
+            "default_limit": _DEFAULT_TEST_ROWS_PER_DATASET,
+            "batch_size": _TEST_BATCH_SIZE,
+            "max_length": _TEST_MAX_LENGTH,
+        },
+    )
+
+    raw_test_data = get_test_data(rows=limit)
     print("dataset_sizes", [len(dataset) for _, dataset in raw_test_data])
     prepared_test_data = [
         (
@@ -219,7 +300,7 @@ def main():
         "loader_summary",
         {
             "source_datasets": len(prepared_test_data),
-            "rows_per_dataset": _TEST_ROWS_PER_DATASET,
+            "rows_per_dataset": limit,
             "total_rows": sum(len(dataset) for _, dataset in prepared_test_data),
             "total_normalized_samples": total_normalized_samples,
             "batch_size": _TEST_BATCH_SIZE,
