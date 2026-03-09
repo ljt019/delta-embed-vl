@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 from datasets import Dataset
 from torch.optim import AdamW
 from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
@@ -252,162 +253,202 @@ def train(
         raise ValueError("No training samples found.")
     logger.info("Training on %d samples for %d epochs", n, epochs)
 
-    logger.info("Loading frozen teacher model")
-    teacher = load_teacher(device=resolved_teacher_device)
+    wandb_run = None
+    if _SETTINGS.wandb_project is not None:
+        wandb_run = wandb.init(
+            project=_SETTINGS.wandb_project,
+            config={
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "lr": lr,
+                "max_length": max_length,
+                "student_model": _SETTINGS.student_model,
+                "teacher_model": _SETTINGS.teacher_model,
+                "limit": limit,
+                "grad_accum_steps": grad_accum_steps,
+            },
+        )
 
-    logger.info("Loading student model")
-    model, processor, projection_head = load_student(
-        device=resolved_student_device,
-        output_dim=teacher.output_dim,
-    )
-    model.train()
-    projection_head.train()
+    try:
+        logger.info("Loading frozen teacher model")
+        teacher = load_teacher(device=resolved_teacher_device)
 
-    indices = np.arange(n, dtype=np.int64)
-    batches_per_epoch = math.ceil(n / batch_size)
-    total_steps = math.ceil((batches_per_epoch * epochs) / grad_accum_steps)
-    warmup_steps = int(total_steps * warmup_ratio)
+        logger.info("Loading student model")
+        model, processor, projection_head = load_student(
+            device=resolved_student_device,
+            output_dim=teacher.output_dim,
+        )
+        model.train()
+        projection_head.train()
 
-    optimizer = AdamW(
-        list(model.parameters()) + list(projection_head.parameters()),
-        lr=lr,
-    )
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
-    )
+        indices = np.arange(n, dtype=np.int64)
+        batches_per_epoch = math.ceil(n / batch_size)
+        total_steps = math.ceil((batches_per_epoch * epochs) / grad_accum_steps)
+        warmup_steps = int(total_steps * warmup_ratio)
 
-    global_step = 0
-    optimizer.zero_grad(set_to_none=True)
-    total_skipped_overlength_samples = 0
-    total_skipped_overlength_batches = 0
-    for epoch in range(epochs):
-        np.random.shuffle(indices)
-        epoch_loss = 0.0
-        num_batches = 0
-        epoch_start_s = time.monotonic()
-        last_progress_log_s = epoch_start_s
-        skipped_overlength_samples = 0
-        skipped_overlength_batches = 0
+        optimizer = AdamW(
+            list(model.parameters()) + list(projection_head.parameters()),
+            lr=lr,
+        )
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps
+        )
 
-        for batch_start in range(0, n, batch_size):
-            batch_start_s = time.monotonic()
-            batch_end = min(batch_start + batch_size, n)
-            batch_ordinal = (batch_start // batch_size) + 1
-            batch_indices = indices[batch_start:batch_end]
-            batch_samples: list[EmbeddingInput] = []
-            batch_origins: list[str] = []
-            for global_index in batch_indices:
-                source, local_index = _resolve_source(sources, int(global_index))
-                batch_samples.append(source.load_example(local_index))
-                batch_origins.append(source.name)
+        global_step = 0
+        optimizer.zero_grad(set_to_none=True)
+        total_skipped_overlength_samples = 0
+        total_skipped_overlength_batches = 0
+        for epoch in range(epochs):
+            np.random.shuffle(indices)
+            epoch_loss = 0.0
+            num_batches = 0
+            epoch_start_s = time.monotonic()
+            last_progress_log_s = epoch_start_s
+            skipped_overlength_samples = 0
+            skipped_overlength_batches = 0
 
-            batch_samples, batch_data, skipped_origins = _collate_with_fallback(
-                batch_samples,
-                batch_origins,
-                processor,
-                max_length,
-            )
-            if skipped_origins:
-                skipped_count = len(skipped_origins)
-                skipped_overlength_samples += skipped_count
-                total_skipped_overlength_samples += skipped_count
-                if batch_data is None:
-                    skipped_overlength_batches += 1
-                    total_skipped_overlength_batches += 1
+            for batch_start in range(0, n, batch_size):
+                batch_start_s = time.monotonic()
+                batch_end = min(batch_start + batch_size, n)
+                batch_ordinal = (batch_start // batch_size) + 1
+                batch_indices = indices[batch_start:batch_end]
+                batch_samples: list[EmbeddingInput] = []
+                batch_origins: list[str] = []
+                for global_index in batch_indices:
+                    source, local_index = _resolve_source(sources, int(global_index))
+                    batch_samples.append(source.load_example(local_index))
+                    batch_origins.append(source.name)
+
+                batch_samples, batch_data, skipped_origins = _collate_with_fallback(
+                    batch_samples,
+                    batch_origins,
+                    processor,
+                    max_length,
+                )
+                if skipped_origins:
+                    skipped_count = len(skipped_origins)
+                    skipped_overlength_samples += skipped_count
+                    total_skipped_overlength_samples += skipped_count
+                    if batch_data is None:
+                        skipped_overlength_batches += 1
+                        total_skipped_overlength_batches += 1
+                        logger.warning(
+                            "Skipping batch %d/%d after all %d samples exceeded student max_length=%d (%s)",
+                            batch_ordinal,
+                            batches_per_epoch,
+                            skipped_count,
+                            max_length,
+                            _summarize_origins(skipped_origins),
+                        )
+                        continue
                     logger.warning(
-                        "Skipping batch %d/%d after all %d samples exceeded student max_length=%d (%s)",
+                        "Recovered batch %d/%d by skipping %d student-overlength samples; kept=%d (%s)",
                         batch_ordinal,
                         batches_per_epoch,
                         skipped_count,
-                        max_length,
+                        len(batch_samples),
                         _summarize_origins(skipped_origins),
                     )
+                if batch_data is None:
                     continue
-                logger.warning(
-                    "Recovered batch %d/%d by skipping %d student-overlength samples; kept=%d (%s)",
-                    batch_ordinal,
-                    batches_per_epoch,
-                    skipped_count,
-                    len(batch_samples),
-                    _summarize_origins(skipped_origins),
+                teacher_target = _embed_teacher_targets(
+                    teacher,
+                    batch_samples,
+                    teacher_batch_size=resolved_teacher_batch_size,
+                    target_device=resolved_student_device,
                 )
-            if batch_data is None:
-                continue
-            teacher_target = _embed_teacher_targets(
-                teacher,
-                batch_samples,
-                teacher_batch_size=resolved_teacher_batch_size,
-                target_device=resolved_student_device,
+
+                model_inputs = {
+                    key: value.to(resolved_student_device)
+                    for key, value in batch_data.items()
+                }
+
+                outputs = model(**model_inputs)
+                attention_mask = model_inputs["attention_mask"]
+                pooled = last_token_pool(outputs.last_hidden_state, attention_mask)
+                student_emb = normalize(projection_head(pooled).float())
+
+                loss = (
+                    cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
+                )
+                loss.backward()
+
+                num_batches += 1
+                should_step = (num_batches % grad_accum_steps == 0) or (batch_end == n)
+                if should_step:
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    global_step += 1
+
+                epoch_loss += loss.item() * grad_accum_steps
+                now_s = time.monotonic()
+                batch_elapsed_s = now_s - batch_start_s
+
+                if wandb_run is not None and should_step:
+                    wandb.log(
+                        {
+                            "train/loss": loss.item() * grad_accum_steps,
+                            "train/lr": scheduler.get_last_lr()[0],
+                            "train/batch_time_s": batch_elapsed_s,
+                        },
+                        step=global_step,
+                    )
+
+                if (
+                    num_batches == 1
+                    or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S
+                ):
+                    elapsed_s = now_s - epoch_start_s
+                    avg_batch_s = elapsed_s / max(num_batches, 1)
+                    remaining_batches = max(batches_per_epoch - num_batches, 0)
+                    eta_s = avg_batch_s * remaining_batches
+                    logger.info(
+                        "Epoch %d/%d  %d/%d batches (%.1f%%)  loss=%.6f avg=%.6f  batch=%.2fs  elapsed=%s  eta=%s",
+                        epoch + 1,
+                        epochs,
+                        num_batches,
+                        batches_per_epoch,
+                        (100.0 * num_batches) / max(batches_per_epoch, 1),
+                        loss.item() * grad_accum_steps,
+                        epoch_loss / max(num_batches, 1),
+                        batch_elapsed_s,
+                        _format_duration(elapsed_s),
+                        _format_duration(eta_s),
+                    )
+                    last_progress_log_s = now_s
+
+            avg_loss = epoch_loss / max(num_batches, 1)
+            if wandb_run is not None:
+                wandb.log(
+                    {
+                        "epoch/avg_loss": avg_loss,
+                        "epoch/skipped_samples": skipped_overlength_samples,
+                    },
+                    step=global_step,
+                )
+            logger.info(
+                "Epoch %d/%d  loss=%.6f  lr=%.2e  steps=%d  skipped_overlength_samples=%d  skipped_overlength_batches=%d",
+                epoch + 1,
+                epochs,
+                avg_loss,
+                scheduler.get_last_lr()[0],
+                global_step,
+                skipped_overlength_samples,
+                skipped_overlength_batches,
             )
 
-            model_inputs = {
-                key: value.to(resolved_student_device)
-                for key, value in batch_data.items()
-            }
-
-            outputs = model(**model_inputs)
-            attention_mask = model_inputs["attention_mask"]
-            pooled = last_token_pool(outputs.last_hidden_state, attention_mask)
-            student_emb = normalize(projection_head(pooled).float())
-
-            loss = cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
-            loss.backward()
-
-            num_batches += 1
-            should_step = (num_batches % grad_accum_steps == 0) or (batch_end == n)
-            if should_step:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-
-            epoch_loss += loss.item() * grad_accum_steps
-            now_s = time.monotonic()
-            batch_elapsed_s = now_s - batch_start_s
-
-            if (
-                num_batches == 1
-                or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S
-            ):
-                elapsed_s = now_s - epoch_start_s
-                avg_batch_s = elapsed_s / max(num_batches, 1)
-                remaining_batches = max(batches_per_epoch - num_batches, 0)
-                eta_s = avg_batch_s * remaining_batches
-                logger.info(
-                    "Epoch %d/%d  %d/%d batches (%.1f%%)  loss=%.6f avg=%.6f  batch=%.2fs  elapsed=%s  eta=%s",
-                    epoch + 1,
-                    epochs,
-                    num_batches,
-                    batches_per_epoch,
-                    (100.0 * num_batches) / max(batches_per_epoch, 1),
-                    loss.item() * grad_accum_steps,
-                    epoch_loss / max(num_batches, 1),
-                    batch_elapsed_s,
-                    _format_duration(elapsed_s),
-                    _format_duration(eta_s),
-                )
-                last_progress_log_s = now_s
-
-        avg_loss = epoch_loss / max(num_batches, 1)
+        out_path = Path(save_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(out_path))
+        save_projection_head(projection_head, out_path)
+        processor.save_pretrained(str(out_path))
         logger.info(
-            "Epoch %d/%d  loss=%.6f  lr=%.2e  steps=%d  skipped_overlength_samples=%d  skipped_overlength_batches=%d",
-            epoch + 1,
-            epochs,
-            avg_loss,
-            scheduler.get_last_lr()[0],
-            global_step,
-            skipped_overlength_samples,
-            skipped_overlength_batches,
+            "Training done: skipped_overlength_samples=%d skipped_overlength_batches=%d",
+            total_skipped_overlength_samples,
+            total_skipped_overlength_batches,
         )
-
-    out_path = Path(save_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(str(out_path))
-    save_projection_head(projection_head, out_path)
-    processor.save_pretrained(str(out_path))
-    logger.info(
-        "Training done: skipped_overlength_samples=%d skipped_overlength_batches=%d",
-        total_skipped_overlength_samples,
-        total_skipped_overlength_batches,
-    )
-    logger.info("Saved checkpoint to %s", out_path)
+        logger.info("Saved checkpoint to %s", out_path)
+    finally:
+        if wandb_run is not None:
+            wandb.finish()
