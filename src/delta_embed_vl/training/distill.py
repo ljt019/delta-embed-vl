@@ -1,5 +1,7 @@
+import json
 import logging
 import math
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -247,6 +249,31 @@ def _raise_if_nonfinite(
     raise FloatingPointError(message)
 
 
+_PRE_FORWARD_LOG = Path("last_student_forward.jsonl")
+
+
+def _log_pre_forward(
+    *,
+    epoch: int,
+    batch_ordinal: int,
+    batches_per_epoch: int,
+    origins: list[str],
+    model_inputs: dict[str, torch.Tensor],
+) -> None:
+    shapes = {k: list(v.shape) for k, v in model_inputs.items()}
+    record = {
+        "epoch": epoch,
+        "batch": f"{batch_ordinal}/{batches_per_epoch}",
+        "origins": origins,
+        "shapes": shapes,
+    }
+    with _PRE_FORWARD_LOG.open("w") as f:
+        json.dump(record, f)
+        f.write("\n")
+        f.flush()
+        sys.stdout.flush()
+
+
 def train(
     *,
     limit: int | None = None,
@@ -405,6 +432,13 @@ def train(
                     for key, value in batch_data.items()
                 }
 
+                _log_pre_forward(
+                    epoch=epoch,
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                    model_inputs=model_inputs,
+                )
                 outputs = model(**model_inputs)
                 _raise_if_nonfinite(
                     outputs.last_hidden_state,
