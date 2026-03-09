@@ -217,6 +217,36 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:02d}h{minutes:02d}m{secs:02d}s"
 
 
+def _raise_if_nonfinite(
+    tensor: torch.Tensor,
+    *,
+    name: str,
+    batch_ordinal: int,
+    batches_per_epoch: int,
+    origins: list[str],
+) -> None:
+    detached = tensor.detach()
+    finite_mask = torch.isfinite(detached)
+    if bool(finite_mask.all().item()):
+        return
+
+    nonfinite_count = detached.numel() - int(finite_mask.sum().item())
+    message = (
+        f"{name} became non-finite in training batch {batch_ordinal}/{batches_per_epoch}; "
+        f"shape={tuple(detached.shape)} dtype={detached.dtype} device={detached.device} "
+        f"nonfinite={nonfinite_count}/{detached.numel()}"
+    )
+    if origins:
+        message += f" origins={_summarize_origins(origins)}"
+    if bool(finite_mask.any().item()):
+        finite_values = detached[finite_mask]
+        message += (
+            f" finite_min={float(finite_values.min().item()):.6g}"
+            f" finite_max={float(finite_values.max().item()):.6g}"
+        )
+    raise FloatingPointError(message)
+
+
 def train(
     *,
     limit: int | None = None,
@@ -357,6 +387,13 @@ def train(
                     teacher_batch_size=resolved_teacher_batch_size,
                     target_device=resolved_student_device,
                 )
+                _raise_if_nonfinite(
+                    teacher_target,
+                    name="teacher_target",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                )
 
                 model_inputs = {
                     key: value.to(resolved_student_device)
@@ -364,12 +401,48 @@ def train(
                 }
 
                 outputs = model(**model_inputs)
+                _raise_if_nonfinite(
+                    outputs.last_hidden_state,
+                    name="student_last_hidden_state",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                )
                 attention_mask = model_inputs["attention_mask"]
                 pooled = last_token_pool(outputs.last_hidden_state, attention_mask)
-                student_emb = normalize(projection_head(pooled).float())
+                _raise_if_nonfinite(
+                    pooled,
+                    name="student_pooled",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                )
+                projected = projection_head(pooled).float()
+                _raise_if_nonfinite(
+                    projected,
+                    name="student_projected",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                )
+                student_emb = normalize(projected)
+                _raise_if_nonfinite(
+                    student_emb,
+                    name="student_embedding",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
+                )
 
                 loss = (
                     cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
+                )
+                _raise_if_nonfinite(
+                    loss.reshape(1),
+                    name="distill_loss",
+                    batch_ordinal=batch_ordinal,
+                    batches_per_epoch=batches_per_epoch,
+                    origins=batch_origins,
                 )
                 loss.backward()
 

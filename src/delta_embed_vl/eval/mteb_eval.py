@@ -40,6 +40,41 @@ def _as_mteb_model_name(model_name: str) -> str:
     return f"local/{model_path.name}"
 
 
+def _raise_if_nonfinite(
+    tensor: torch.Tensor,
+    *,
+    name: str,
+    task_name: str,
+    hf_subset: str,
+    batch_start: int,
+    batch_stop: int,
+    max_length: int,
+    batch_texts: list[str],
+) -> None:
+    detached = tensor.detach()
+    finite_mask = torch.isfinite(detached)
+    if bool(finite_mask.all().item()):
+        return
+
+    nonfinite_count = detached.numel() - int(finite_mask.sum().item())
+    text_lengths = [len(text) for text in batch_texts]
+    message = (
+        f"{name} became non-finite during eval; task={task_name} subset={hf_subset} "
+        f"batch={batch_start}:{batch_stop} max_length={max_length} "
+        f"shape={tuple(detached.shape)} dtype={detached.dtype} device={detached.device} "
+        f"nonfinite={nonfinite_count}/{detached.numel()}"
+    )
+    if text_lengths:
+        message += f" text_len_min={min(text_lengths)} text_len_max={max(text_lengths)}"
+    if bool(finite_mask.any().item()):
+        finite_values = detached[finite_mask]
+        message += (
+            f" finite_min={float(finite_values.min().item()):.6g}"
+            f" finite_max={float(finite_values.max().item()):.6g}"
+        )
+    raise FloatingPointError(message)
+
+
 class DeltaEmbedEncoder:
     """MTEB-compatible encoder wrapping our student model."""
 
@@ -81,6 +116,7 @@ class DeltaEmbedEncoder:
         with torch.no_grad():
             for i in range(0, len(all_texts), batch_size):
                 batch_texts = all_texts[i : i + batch_size]
+                batch_stop = i + len(batch_texts)
                 encoded = build_student_batch(
                     self.processor,
                     [EmbeddingInput(text=text) for text in batch_texts],
@@ -88,10 +124,51 @@ class DeltaEmbedEncoder:
                 ).to(self._device)
 
                 outputs = self.model(**encoded)
+                _raise_if_nonfinite(
+                    outputs.last_hidden_state,
+                    name="eval_last_hidden_state",
+                    task_name=task_metadata.name,
+                    hf_subset=hf_subset,
+                    batch_start=i,
+                    batch_stop=batch_stop,
+                    max_length=self.max_length,
+                    batch_texts=batch_texts,
+                )
                 pooled = last_token_pool(
                     outputs.last_hidden_state, encoded["attention_mask"]
                 )
-                emb = normalize(self.projection_head(pooled).float())
+                _raise_if_nonfinite(
+                    pooled,
+                    name="eval_pooled",
+                    task_name=task_metadata.name,
+                    hf_subset=hf_subset,
+                    batch_start=i,
+                    batch_stop=batch_stop,
+                    max_length=self.max_length,
+                    batch_texts=batch_texts,
+                )
+                projected = self.projection_head(pooled).float()
+                _raise_if_nonfinite(
+                    projected,
+                    name="eval_projected",
+                    task_name=task_metadata.name,
+                    hf_subset=hf_subset,
+                    batch_start=i,
+                    batch_stop=batch_stop,
+                    max_length=self.max_length,
+                    batch_texts=batch_texts,
+                )
+                emb = normalize(projected)
+                _raise_if_nonfinite(
+                    emb,
+                    name="eval_embedding",
+                    task_name=task_metadata.name,
+                    hf_subset=hf_subset,
+                    batch_start=i,
+                    batch_stop=batch_stop,
+                    max_length=self.max_length,
+                    batch_texts=batch_texts,
+                )
                 all_embeddings.append(emb.cpu().float())
 
         return torch.cat(all_embeddings, dim=0)
