@@ -162,9 +162,20 @@ def train_model_cli():
     )
 
 
-def eval_model(*, model_path: str = "checkpoints", eval_batch_size: int = 16):
+def eval_model(
+    *,
+    model_path: str = "checkpoints",
+    eval_batch_size: int = 16,
+    max_length: int = _SETTINGS.student_max_length,
+    student_device: str | None = None,
+):
     """Run MTEB eval on the latest checkpoint directory."""
-    run_eval(model_path=model_path, eval_batch_size=eval_batch_size)
+    run_eval(
+        model_path=model_path,
+        eval_batch_size=eval_batch_size,
+        max_length=max_length,
+        device=student_device,
+    )
 
 
 def eval_model_cli():
@@ -193,7 +204,12 @@ def main():
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
     )
-    eval_model(model_path=args.save_dir, eval_batch_size=args.eval_batch_size)
+    eval_model(
+        model_path=args.save_dir,
+        eval_batch_size=args.eval_batch_size,
+        max_length=args.max_length,
+        student_device=args.student_device,
+    )
 
 
 if __name__ == "__main__":

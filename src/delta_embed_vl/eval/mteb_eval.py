@@ -22,9 +22,11 @@ from delta_embed_vl.model.student import (
     get_embedding_dim,
     load_student,
 )
+from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
 _DEFAULT_EVAL_BATCH_SIZE = 16
+_SETTINGS = Settings()
 
 
 def _as_mteb_model_name(model_name: str) -> str:
@@ -46,16 +48,17 @@ class DeltaEmbedEncoder:
         model_name: str = STUDENT_MODEL_ID,
         revision: str | None = None,
         device: str | None = None,
+        max_length: int = _SETTINGS.student_max_length,
         **kwargs: Any,
     ) -> None:
         self.model_name = model_name
         self.mteb_name = _as_mteb_model_name(model_name)
         self.revision = revision
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.max_length = max_length
         self.model, self.processor, self.projection_head = load_student(
             model_id=model_name,
             device=self._device,
-            attn_implementation="sdpa",
         )
         self.model.eval()
         self.projection_head.eval()
@@ -81,7 +84,7 @@ class DeltaEmbedEncoder:
                 encoded = build_student_batch(
                     self.processor,
                     [EmbeddingInput(text=text) for text in batch_texts],
-                    max_length=512,
+                    max_length=self.max_length,
                 ).to(self._device)
 
                 outputs = self.model(**encoded)
@@ -117,7 +120,7 @@ class DeltaEmbedEncoder:
             languages=["eng-Latn"],
             n_parameters=None,
             memory_usage_mb=None,
-            max_tokens=512,
+            max_tokens=self.max_length,
             embed_dim=self.embed_dim,
             license=None,
             open_weights=True,
@@ -134,6 +137,8 @@ def run_eval(
     model_path: str = STUDENT_MODEL_ID,
     tasks: list[str] | None = None,
     eval_batch_size: int = _DEFAULT_EVAL_BATCH_SIZE,
+    max_length: int = _SETTINGS.student_max_length,
+    device: str | None = None,
 ) -> ModelResult:
     """Run MTEB evaluation on the given tasks."""
     if tasks is None:
@@ -144,7 +149,11 @@ def run_eval(
             "NanoNFCorpusRetrieval",
         ]
 
-    encoder = DeltaEmbedEncoder(model_name=model_path)
+    encoder = DeltaEmbedEncoder(
+        model_name=model_path,
+        device=device,
+        max_length=max_length,
+    )
     mteb_tasks = mteb.get_tasks(tasks=tasks, languages=["eng"])
     result = mteb.evaluate(
         encoder,
