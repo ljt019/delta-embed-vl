@@ -56,6 +56,7 @@ def load_teacher(
     *,
     device: str = "cuda:0",
     dtype: torch.dtype = torch.bfloat16,
+    attn_implementation: str | None = None,
 ) -> TeacherEmbedder:
     processor = cast(
         Qwen3VLProcessor,
@@ -68,15 +69,15 @@ def load_teacher(
     tokenizer.padding_side = "right"
 
     if device.startswith("cuda"):
-        attn_implementation = (
+        resolved_attn_implementation = attn_implementation or (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         )
-        logger.info("Loading teacher with %s attention", attn_implementation)
+        logger.info("Loading teacher with %s attention", resolved_attn_implementation)
         model = Qwen3VLModel.from_pretrained(
             model_id,
             torch_dtype=dtype,
             low_cpu_mem_usage=True,
-            attn_implementation=attn_implementation,
+            attn_implementation=resolved_attn_implementation,
         )
     else:
         model = Qwen3VLModel.from_pretrained(

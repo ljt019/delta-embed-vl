@@ -41,6 +41,7 @@ class TrainRunArgs:
     teacher_batch_size: int | None
     eval_batch_size: int
     seed: int
+    attention: str | None
 
 
 def _configure_logging() -> None:
@@ -76,6 +77,12 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--grad-accum-steps", type=int, default=1)
     parser.add_argument("--seed", type=int, default=_SETTINGS.seed)
     parser.add_argument("--save-dir", type=str, default="checkpoints")
+    parser.add_argument(
+        "--attention",
+        choices=("sdpa", "fa"),
+        default=None,
+        help="Force attention backend for teacher/student/eval.",
+    )
     parser.add_argument("--teacher-device", type=str, default=None)
     parser.add_argument("--student-device", type=str, default=None)
     parser.add_argument("--teacher-batch-size", type=int, default=None)
@@ -108,7 +115,14 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
         teacher_batch_size=args.teacher_batch_size,
         eval_batch_size=args.eval_batch_size,
         seed=args.seed,
+        attention=_resolve_attention(args.attention),
     )
+
+
+def _resolve_attention(attention: str | None) -> str | None:
+    if attention == "fa":
+        return "flash_attention_2"
+    return attention
 
 
 def prepare_data(
@@ -141,6 +155,7 @@ def train_model(
     teacher_device: str | None = None,
     student_device: str | None = None,
     teacher_batch_size: int | None = None,
+    attention: str | None = None,
 ):
     """Train student via local teacher-student cosine distillation."""
     train(
@@ -155,6 +170,7 @@ def train_model(
         teacher_device=teacher_device,
         student_device=student_device,
         teacher_batch_size=teacher_batch_size,
+        attention=attention,
     )
 
 
@@ -174,6 +190,7 @@ def train_model_cli():
         teacher_device=args.teacher_device,
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
+        attention=args.attention,
     )
 
 
@@ -183,6 +200,7 @@ def eval_model(
     eval_batch_size: int = 16,
     max_length: int = _SETTINGS.student_max_length,
     student_device: str | None = None,
+    attention: str | None = None,
 ):
     """Run MTEB eval on the latest checkpoint directory."""
     run_eval(
@@ -190,6 +208,7 @@ def eval_model(
         eval_batch_size=eval_batch_size,
         max_length=max_length,
         device=student_device,
+        attention=attention,
     )
 
 
@@ -198,10 +217,24 @@ def eval_model_cli():
     parser.add_argument("--model-path", type=str, default="checkpoints")
     parser.add_argument("--eval-batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=_SETTINGS.seed)
+    parser.add_argument("--student-device", type=str, default=None)
+    parser.add_argument(
+        "--attention",
+        choices=("sdpa", "fa"),
+        default=None,
+        help="Force eval attention backend.",
+    )
+    parser.add_argument("--max-length", type=int, default=_SETTINGS.student_max_length)
     args = parser.parse_args()
     _configure_logging()
     _set_seed(args.seed)
-    eval_model(model_path=args.model_path, eval_batch_size=args.eval_batch_size)
+    eval_model(
+        model_path=args.model_path,
+        eval_batch_size=args.eval_batch_size,
+        max_length=args.max_length,
+        student_device=args.student_device,
+        attention=_resolve_attention(args.attention),
+    )
 
 
 def main():
@@ -221,12 +254,14 @@ def main():
         teacher_device=args.teacher_device,
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
+        attention=args.attention,
     )
     eval_model(
         model_path=args.save_dir,
         eval_batch_size=args.eval_batch_size,
         max_length=args.max_length,
         student_device=args.student_device,
+        attention=args.attention,
     )
 
 

@@ -84,6 +84,7 @@ class DeltaEmbedEncoder:
         revision: str | None = None,
         device: str | None = None,
         max_length: int = _SETTINGS.student_max_length,
+        attention: str | None = None,
         **kwargs: Any,
     ) -> None:
         self.model_name = model_name
@@ -94,6 +95,7 @@ class DeltaEmbedEncoder:
         self.model, self.processor, self.projection_head = load_student(
             model_id=model_name,
             device=self._device,
+            attn_implementation=attention,
         )
         self.model.eval()
         self.projection_head.eval()
@@ -216,6 +218,7 @@ def run_eval(
     eval_batch_size: int = _DEFAULT_EVAL_BATCH_SIZE,
     max_length: int = _SETTINGS.student_max_length,
     device: str | None = None,
+    attention: str | None = None,
 ) -> ModelResult:
     """Run MTEB evaluation on the given tasks."""
     if tasks is None:
@@ -230,6 +233,7 @@ def run_eval(
         model_name=model_path,
         device=device,
         max_length=max_length,
+        attention=attention,
     )
     mteb_tasks = mteb.get_tasks(tasks=tasks, languages=["eng"])
     result = mteb.evaluate(

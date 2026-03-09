@@ -260,6 +260,7 @@ def train(
     teacher_device: str | None = None,
     student_device: str | None = None,
     teacher_batch_size: int | None = None,
+    attention: str | None = None,
 ) -> None:
     """Run local teacher-student cosine distillation on multimodal data."""
     if grad_accum_steps < 1:
@@ -301,12 +302,16 @@ def train(
 
     try:
         logger.info("Loading frozen teacher model")
-        teacher = load_teacher(device=resolved_teacher_device)
+        teacher = load_teacher(
+            device=resolved_teacher_device,
+            attn_implementation=attention,
+        )
 
         logger.info("Loading student model")
         model, processor, projection_head = load_student(
             device=resolved_student_device,
             output_dim=teacher.output_dim,
+            attn_implementation=attention,
         )
         model.train()
         projection_head.train()
