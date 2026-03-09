@@ -176,12 +176,14 @@ def _load_raw_subset(name: str, *, rows: int) -> Dataset:
 
     fetched_rows = list(stream.take(rows - cached_rows))
     if not fetched_rows and cached_dataset is None:
-        raise ValueError(f"Failed to load any rows for dataset_id={dataset_id} config={config}.")
+        raise ValueError(
+            f"Failed to load any rows for dataset_id={dataset_id} config={config}."
+        )
 
     if cached_dataset is None:
         dataset = Dataset.from_list(fetched_rows)
     elif not fetched_rows:
-        dataset = cached_dataset
+        return cached_dataset
     else:
         dataset = concatenate_datasets(
             [
@@ -201,6 +203,8 @@ def _load_raw_subset(name: str, *, rows: int) -> Dataset:
         },
     )
     if len(dataset) == rows:
+        return dataset
+    if len(dataset) < rows:
         return dataset
     return dataset.select(range(rows))
 
