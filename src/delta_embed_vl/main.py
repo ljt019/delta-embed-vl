@@ -1,7 +1,10 @@
 import argparse
 import logging
+import random
 from dataclasses import dataclass
 
+import numpy as np
+import torch
 from datasets import disable_progress_bars
 
 from delta_embed_vl.data.prepare import prepare_data as prepare_cached_data
@@ -37,6 +40,7 @@ class TrainRunArgs:
     student_device: str | None
     teacher_batch_size: int | None
     eval_batch_size: int
+    seed: int
 
 
 def _configure_logging() -> None:
@@ -44,6 +48,14 @@ def _configure_logging() -> None:
     disable_progress_bars()
     for logger_name in _NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _add_limit_arg(parser: argparse.ArgumentParser) -> None:
@@ -62,6 +74,7 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--warmup-ratio", type=float, default=0.1)
     parser.add_argument("--max-length", type=int, default=_SETTINGS.student_max_length)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=_SETTINGS.seed)
     parser.add_argument("--save-dir", type=str, default="checkpoints")
     parser.add_argument("--teacher-device", type=str, default=None)
     parser.add_argument("--student-device", type=str, default=None)
@@ -94,6 +107,7 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
         student_device=args.student_device,
         teacher_batch_size=args.teacher_batch_size,
         eval_batch_size=args.eval_batch_size,
+        seed=args.seed,
     )
 
 
@@ -147,6 +161,7 @@ def train_model(
 def train_model_cli():
     _configure_logging()
     args = _parse_train_run_args(include_limit=True)
+    _set_seed(args.seed)
     train_model(
         limit=args.limit,
         epochs=args.epochs,
@@ -182,14 +197,17 @@ def eval_model_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=str, default="checkpoints")
     parser.add_argument("--eval-batch-size", type=int, default=16)
+    parser.add_argument("--seed", type=int, default=_SETTINGS.seed)
     args = parser.parse_args()
     _configure_logging()
+    _set_seed(args.seed)
     eval_model(model_path=args.model_path, eval_batch_size=args.eval_batch_size)
 
 
 def main():
     _configure_logging()
     args = _parse_train_run_args(include_limit=True)
+    _set_seed(args.seed)
     prepare_data(limit=args.limit, max_length=args.max_length)
     train_model(
         limit=args.limit,
