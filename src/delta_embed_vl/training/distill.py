@@ -17,6 +17,7 @@ from transformers import Qwen3VLProcessor, get_cosine_schedule_with_warmup
 from delta_embed_vl.data.download import CAULDRON_CONFIGS, load_raw_cauldron
 from delta_embed_vl.data.prepare import (
     load_prepared_cauldron_embedding_input,
+    prepare_balanced,
     prepare_cauldron,
     prepare_wikipedia,
 )
@@ -33,6 +34,7 @@ from delta_embed_vl.training.losses import cosine_distill_loss
 
 logger = logging.getLogger(__name__)
 _PROGRESS_LOG_INTERVAL_S = 30.0
+_WANDB_LOG_EVERY_N_STEPS = 20
 _SETTINGS = Settings()
 
 
@@ -61,14 +63,20 @@ def _auto_student_device() -> str:
 def _build_sources(
     *,
     limit: int | None = None,
+    limit_all: bool = False,
     max_length: int = _SETTINGS.student_max_length,
 ) -> tuple[list[PreparedSource], int]:
     """Load processed data and resolve each global index back to an example."""
-    wiki_ds = prepare_wikipedia(limit=limit)
-    cauldron_datasets = prepare_cauldron(
-        limit=limit,
-        student_max_length=max_length,
-    )
+    if limit_all:
+        wiki_ds, cauldron_datasets = prepare_balanced(
+            student_max_length=max_length,
+        )
+    else:
+        wiki_ds = prepare_wikipedia(limit=limit)
+        cauldron_datasets = prepare_cauldron(
+            limit=limit,
+            student_max_length=max_length,
+        )
 
     sources: list[PreparedSource] = []
     next_start = 0
@@ -277,6 +285,7 @@ def _log_pre_forward(
 def train(
     *,
     limit: int | None = None,
+    limit_all: bool = False,
     epochs: int = 3,
     batch_size: int = 32,
     lr: float = 2e-5,
@@ -306,7 +315,9 @@ def train(
     )
 
     logger.info("Loading training data")
-    sources, n = _build_sources(limit=limit, max_length=max_length)
+    sources, n = _build_sources(
+        limit=limit, limit_all=limit_all, max_length=max_length
+    )
     if n == 0:
         raise ValueError("No training samples found.")
     logger.info("Training on %d samples for %d epochs", n, epochs)
@@ -497,7 +508,11 @@ def train(
                 now_s = time.monotonic()
                 batch_elapsed_s = now_s - batch_start_s
 
-                if wandb_run is not None and should_step:
+                if (
+                    wandb_run is not None
+                    and should_step
+                    and global_step % _WANDB_LOG_EVERY_N_STEPS == 0
+                ):
                     wandb.log(
                         {
                             "train/loss": loss.item() * grad_accum_steps,

@@ -565,6 +565,36 @@ def prepare_cauldron(
     ]
 
 
+def prepare_balanced(
+    *,
+    student_max_length: int = _SETTINGS.student_max_length,
+    wikipedia_ratio: float = _SETTINGS.wikipedia_ratio,
+) -> tuple[Dataset, list[Dataset]]:
+    """Use all Cauldron data, size Wikipedia proportionally via wikipedia_ratio.
+
+    The ratio is applied to *prepared* sample counts so the balance
+    reflects actual training volume, not raw row counts.
+    """
+    cauldron = prepare_cauldron(limit=None, student_max_length=student_max_length)
+    total_cauldron_samples = sum(len(ds) for ds in cauldron)
+    target_wiki_samples = max(1, round(total_cauldron_samples * wikipedia_ratio))
+
+    wikipedia_full = prepare_wikipedia(limit=None)
+    if len(wikipedia_full) > target_wiki_samples:
+        wikipedia = wikipedia_full.select(range(target_wiki_samples))
+    else:
+        wikipedia = wikipedia_full
+
+    logger.info(
+        "Balanced mode: cauldron_samples=%d wikipedia_ratio=%.2f target_wiki=%d actual_wiki=%d",
+        total_cauldron_samples,
+        wikipedia_ratio,
+        target_wiki_samples,
+        len(wikipedia),
+    )
+    return wikipedia, cauldron
+
+
 def prepare_data(
     download_first: bool = False,
     *,

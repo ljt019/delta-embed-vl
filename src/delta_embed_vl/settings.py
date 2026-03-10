@@ -14,4 +14,6 @@ class Settings(BaseSettings):
     teacher_max_model_len: int = 8192
     teacher_prompt_margin_tokens: int = 256
 
+    wikipedia_ratio: float = 0.4
+
     artifact_version: str = "qwen3_vl_contract_v2"

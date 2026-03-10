@@ -7,7 +7,10 @@ import numpy as np
 import torch
 from datasets import disable_progress_bars
 
-from delta_embed_vl.data.prepare import prepare_data as prepare_cached_data
+from delta_embed_vl.data.prepare import (
+    prepare_balanced,
+    prepare_data as prepare_cached_data,
+)
 from delta_embed_vl.eval.mteb_eval import run_eval
 from delta_embed_vl.settings import Settings
 from delta_embed_vl.training.distill import train
@@ -26,9 +29,13 @@ _NOISY_LOGGERS = (
 )
 
 
+_LIMIT_ALL = "all"
+
+
 @dataclass(frozen=True)
 class TrainRunArgs:
     limit: int | None
+    limit_all: bool
     epochs: int
     batch_size: int
     lr: float
@@ -59,12 +66,18 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _parse_limit_value(value: str) -> int | str:
+    if value.lower() == _LIMIT_ALL:
+        return _LIMIT_ALL
+    return int(value)
+
+
 def _add_limit_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--limit",
-        type=int,
+        type=_parse_limit_value,
         default=None,
-        help="Use only first N rows per dataset for test runs.",
+        help="N rows per dataset, or 'all' for full Cauldron + balanced Wikipedia.",
     )
 
 
@@ -92,7 +105,10 @@ def _add_train_args(parser: argparse.ArgumentParser) -> None:
 def _parse_limit() -> int | None:
     parser = argparse.ArgumentParser()
     _add_limit_arg(parser)
-    return parser.parse_args().limit
+    raw = parser.parse_args().limit
+    if raw == _LIMIT_ALL:
+        return None
+    return raw
 
 
 def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
@@ -101,8 +117,11 @@ def _parse_train_run_args(*, include_limit: bool) -> TrainRunArgs:
         _add_limit_arg(parser)
     _add_train_args(parser)
     args = parser.parse_args()
+    raw_limit = getattr(args, "limit", None)
+    is_all = raw_limit == _LIMIT_ALL
     return TrainRunArgs(
-        limit=getattr(args, "limit", None),
+        limit=None if is_all else raw_limit,
+        limit_all=is_all,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -128,11 +147,15 @@ def _resolve_attention(attention: str | None) -> str | None:
 def prepare_data(
     *,
     limit: int | None = None,
+    limit_all: bool = False,
     max_length: int = _SETTINGS.student_max_length,
 ):
     """Preprocess datasets to Arrow caches."""
     logger.info("Preprocessing datasets")
-    prepare_cached_data(limit=limit, student_max_length=max_length)
+    if limit_all:
+        prepare_balanced(student_max_length=max_length)
+    else:
+        prepare_cached_data(limit=limit, student_max_length=max_length)
 
     logger.info("Data preparation complete")
 
@@ -145,6 +168,7 @@ def prepare_data_cli():
 def train_model(
     *,
     limit: int | None = None,
+    limit_all: bool = False,
     epochs: int = 3,
     batch_size: int = 32,
     lr: float = 2e-5,
@@ -160,6 +184,7 @@ def train_model(
     """Train student via local teacher-student cosine distillation."""
     train(
         limit=limit,
+        limit_all=limit_all,
         epochs=epochs,
         batch_size=batch_size,
         lr=lr,
@@ -180,6 +205,7 @@ def train_model_cli():
     _set_seed(args.seed)
     train_model(
         limit=args.limit,
+        limit_all=args.limit_all,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
@@ -241,9 +267,14 @@ def main():
     _configure_logging()
     args = _parse_train_run_args(include_limit=True)
     _set_seed(args.seed)
-    prepare_data(limit=args.limit, max_length=args.max_length)
+    prepare_data(
+        limit=args.limit,
+        limit_all=args.limit_all,
+        max_length=args.max_length,
+    )
     train_model(
         limit=args.limit,
+        limit_all=args.limit_all,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
