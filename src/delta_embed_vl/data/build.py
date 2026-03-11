@@ -26,6 +26,7 @@ from delta_embed_vl.model.tokenization import DEFAULT_EMBED_INSTRUCTION, Embeddi
 
 logger = logging.getLogger(__name__)
 _DATASET_DIR = Path("data/dataset")
+_NORMALIZED_DIR = Path("data/normalized")
 
 _NORMALIZED_FEATURES = Features(
     {
@@ -75,8 +76,7 @@ def build_dataset(
     if teacher_batch_size < 1:
         raise ValueError("teacher_batch_size must be at least 1.")
 
-    logger.info("Normalizing samples")
-    normalized_ds = _build_normalized(
+    normalized_ds = _load_or_build_normalized(
         limit=limit,
         limit_all=limit_all,
         max_length=max_length,
@@ -101,13 +101,18 @@ def build_dataset(
         dataset.push_to_hub(hub_id, split="train")
 
 
-def _build_normalized(
+def _load_or_build_normalized(
     *,
     limit: int | None,
     limit_all: bool,
     max_length: int,
 ) -> Dataset:
-    temp_dir = _DATASET_DIR.with_name("dataset.normalize-build")
+    if _is_saved_dataset(_NORMALIZED_DIR):
+        logger.info("Normalized cache hit: %s", _NORMALIZED_DIR)
+        return Dataset.load_from_disk(str(_NORMALIZED_DIR))
+
+    logger.info("Normalizing samples")
+    temp_dir = _NORMALIZED_DIR.with_name("normalized.build")
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +138,7 @@ def _build_normalized(
     else:
         dataset = Dataset.from_file(str(arrow_path))
 
+    _save_dataset(dataset, _NORMALIZED_DIR)
     shutil.rmtree(temp_dir, ignore_errors=True)
     return dataset
 
