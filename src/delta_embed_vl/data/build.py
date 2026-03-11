@@ -23,7 +23,7 @@ from datasets import Image as HFImage
 from datasets.arrow_writer import ArrowWriter
 
 from delta_embed_vl import cfg
-from delta_embed_vl.data.download import load_raw_wikipedia
+from delta_embed_vl.data.download import load_raw_cauldron, load_raw_wikipedia
 from delta_embed_vl.data.sources import iter_source_samples, normalization_source_names
 from delta_embed_vl.data.teacher import TeacherEmbedder, load_teacher
 from delta_embed_vl.model.tokenization import DEFAULT_EMBED_INSTRUCTION, EmbeddingInput
@@ -54,7 +54,7 @@ _DATASET_FEATURES = Features(
 )
 
 _NORMALIZED_WRITE_BATCH_SIZE = 512
-_MIN_RAW_ROWS_PER_WIKIPEDIA_TASK = 512
+_MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
 
 
 @dataclass(frozen=True)
@@ -164,14 +164,7 @@ def _load_or_build_normalized(
         available_cpus,
         len(tasks),
     )
-
-    wikipedia_shards = max(
-        (task.num_shards for task in tasks if task.source == "wikipedia"),
-        default=1,
-    )
-    if wikipedia_shards > 1:
-        logger.info("Priming wikipedia raw cache for %d shard(s)", wikipedia_shards)
-        load_raw_wikipedia(limit=resolved_limit, no_stream=no_stream)
+    _prime_sharded_raw_caches(tasks, limit=resolved_limit, no_stream=no_stream)
 
     temp_root = _NORMALIZED_DIR.with_name("normalized.build")
     if temp_root.exists():
@@ -255,31 +248,91 @@ def _detect_cpu_workers(num_tasks: int) -> int:
     return max(1, min(_detect_available_cpu_count(), num_tasks))
 
 
+def _source_max_shards(*, limit: int | None) -> int:
+    if limit is None:
+        return _detect_available_cpu_count()
+    return max(1, math.ceil(limit / _MIN_RAW_ROWS_PER_NORMALIZATION_TASK))
+
+
 def _plan_normalization_tasks(*, limit: int | None) -> list[NormalizationTask]:
     sources = normalization_source_names()
-    non_wikipedia_sources = [source for source in sources if source != "wikipedia"]
-    max_wikipedia_shards = max(
-        1, _detect_available_cpu_count() - len(non_wikipedia_sources)
-    )
-    if limit is None:
-        wikipedia_shards = max_wikipedia_shards
-    else:
-        wikipedia_shards = min(
-            max_wikipedia_shards,
-            max(1, math.ceil(limit / _MIN_RAW_ROWS_PER_WIKIPEDIA_TASK)),
-        )
+    target_tasks = max(1, _detect_available_cpu_count())
+    max_shards_per_source = _source_max_shards(limit=limit)
+    shard_counts = {source: 1 for source in sources}
+    remaining_tasks = max(0, target_tasks - len(sources))
+
+    while remaining_tasks > 0:
+        advanced = False
+        for source in sources:
+            if shard_counts[source] >= max_shards_per_source:
+                continue
+            shard_counts[source] += 1
+            remaining_tasks -= 1
+            advanced = True
+            if remaining_tasks == 0:
+                break
+        if not advanced:
+            break
 
     return [
-        *[
-            NormalizationTask(
-                source="wikipedia",
-                shard_index=shard_index,
-                num_shards=wikipedia_shards,
-            )
-            for shard_index in range(wikipedia_shards)
-        ],
-        *[NormalizationTask(source=source) for source in non_wikipedia_sources],
+        NormalizationTask(
+            source=source,
+            shard_index=shard_index,
+            num_shards=shard_counts[source],
+        )
+        for source in sources
+        for shard_index in range(shard_counts[source])
     ]
+
+
+def _prime_sharded_raw_caches(
+    tasks: list[NormalizationTask],
+    *,
+    limit: int | None,
+    no_stream: bool,
+) -> None:
+    sharded_sources = sorted({task.source for task in tasks if task.num_shards > 1})
+    if not sharded_sources:
+        return
+
+    logger.info("Priming raw cache for %d sharded source(s)", len(sharded_sources))
+    max_workers = min(
+        len(sharded_sources), max(1, min(_detect_available_cpu_count(), 16))
+    )
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _prime_raw_source,
+                source,
+                limit=limit,
+                no_stream=no_stream,
+            ): source
+            for source in sharded_sources
+        }
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                future.result()
+            except Exception:
+                logger.exception("Failed to prime raw cache for %s", source)
+                raise
+
+
+def _prime_raw_source(source: str, *, limit: int | None, no_stream: bool) -> None:
+    if source == "wikipedia":
+        load_raw_wikipedia(limit=limit, no_stream=no_stream)
+        return
+    if source.startswith("cauldron/"):
+        load_raw_cauldron(
+            source.removeprefix("cauldron/"),
+            limit=limit,
+            no_stream=no_stream,
+        )
+        return
+    supported_sources = ", ".join(normalization_source_names())
+    raise ValueError(
+        f"Unknown normalization source: {source}. Supported: {supported_sources}"
+    )
 
 
 def _normalization_task_label(task: NormalizationTask) -> str:
