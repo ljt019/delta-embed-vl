@@ -27,4 +27,4 @@ project = "delta-embed-vl"
 interval = 20
 
 [log]
-level = "info" 
+level = "debug" 
