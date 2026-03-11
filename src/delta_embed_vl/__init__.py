@@ -16,12 +16,15 @@ _NOISY_LOGGERS = (
     "httpcore",
     "httpx",
     "huggingface_hub",
+    "PIL",
     "urllib3",
 )
 
 
 def configure_logging() -> None:
-    level = getattr(logging, cfg.get("log", {}).get("level", "info").upper(), logging.INFO)
+    level = getattr(
+        logging, cfg.get("log", {}).get("level", "info").upper(), logging.INFO
+    )
     logging.basicConfig(level=level, format=_LOG_FMT, force=True)
     disable_progress_bars()
     for logger_name in _NOISY_LOGGERS:

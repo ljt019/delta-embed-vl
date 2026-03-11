@@ -14,7 +14,7 @@ from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
 from delta_embed_vl import cfg, configure_logging, resolve_attention, set_seed
-from delta_embed_vl.data.build import decode_image, load_training_dataset
+from delta_embed_vl.data.build import load_training_dataset
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
 from delta_embed_vl.model.tokenization import (
@@ -47,7 +47,7 @@ def _summarize_origins(origins: list[str]) -> str:
 def _row_to_embedding_input(row: dict[str, Any]) -> EmbeddingInput:
     return EmbeddingInput(
         text=row.get("text") or None,
-        image=decode_image(row.get("image_bytes")),
+        image=row.get("image"),
         instruction=row.get("instruction") or DEFAULT_EMBED_INSTRUCTION,
     )
 

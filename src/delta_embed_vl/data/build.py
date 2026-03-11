@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import logging
 import shutil
 from collections.abc import Iterator
@@ -8,7 +7,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import torch
-from datasets import Dataset, Features, Sequence, Value, concatenate_datasets, load_dataset
+from datasets import (
+    Dataset,
+    Features,
+    Sequence,
+    Value,
+    concatenate_datasets,
+    load_dataset,
+)
+from datasets import Image as HFImage
 from datasets.arrow_writer import ArrowWriter
 from PIL import Image
 
@@ -23,7 +30,7 @@ _DATASET_DIR = Path("data/dataset")
 _NORMALIZED_FEATURES = Features(
     {
         "text": Value("string"),
-        "image_bytes": Value("binary"),
+        "image": HFImage(),
         "instruction": Value("string"),
         "source": Value("string"),
         "role": Value("string"),
@@ -33,30 +40,13 @@ _NORMALIZED_FEATURES = Features(
 _DATASET_FEATURES = Features(
     {
         "text": Value("string"),
-        "image_bytes": Value("binary"),
+        "image": HFImage(),
         "instruction": Value("string"),
         "source": Value("string"),
         "role": Value("string"),
         "teacher_embedding": Sequence(Value("float32")),
     }
 )
-
-
-def encode_image(image: Image.Image) -> bytes:
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=95, subsampling=0)
-    return buffer.getvalue()
-
-
-def decode_image(data: bytes | bytearray | memoryview | None) -> Image.Image | None:
-    if data is None:
-        return None
-    if isinstance(data, memoryview):
-        data = data.tobytes()
-    elif isinstance(data, bytearray):
-        data = bytes(data)
-    with Image.open(io.BytesIO(data)) as loaded:
-        return loaded.convert("RGB")
 
 
 def load_training_dataset() -> Dataset:
@@ -163,9 +153,7 @@ def _normalize_batches(
         buffer.append(
             {
                 "text": sample.text,
-                "image_bytes": None
-                if sample.image is None
-                else encode_image(sample.image),
+                "image": sample.image,
                 "instruction": sample.instruction,
                 "source": sample.source,
                 "role": sample.role,
@@ -182,7 +170,7 @@ def _normalize_batches(
 def _flush_buffer(buffer: list[dict[str, object]]) -> dict[str, list[object]]:
     return {
         "text": [r["text"] for r in buffer],
-        "image_bytes": [r["image_bytes"] for r in buffer],
+        "image": [r["image"] for r in buffer],
         "instruction": [r["instruction"] for r in buffer],
         "source": [r["source"] for r in buffer],
         "role": [r["role"] for r in buffer],
@@ -221,7 +209,7 @@ def _embed_shard(
         inputs = [
             EmbeddingInput(
                 text=row.get("text") or None,
-                image=decode_image(row.get("image_bytes")),
+                image=row.get("image"),
                 instruction=row.get("instruction") or DEFAULT_EMBED_INSTRUCTION,
             )
             for row in batch_rows
@@ -237,7 +225,7 @@ def _embed_shard(
         writer.write_batch(
             {
                 "text": [r["text"] for r in batch_rows],
-                "image_bytes": [r["image_bytes"] for r in batch_rows],
+                "image": [r["image"] for r in batch_rows],
                 "instruction": [r["instruction"] for r in batch_rows],
                 "source": [r["source"] for r in batch_rows],
                 "role": [r["role"] for r in batch_rows],
@@ -273,14 +261,10 @@ def _embed_normalized(
         len(devices),
         ", ".join(devices),
     )
-    teachers = [
-        load_teacher(device=d, attn_implementation=attention) for d in devices
-    ]
+    teachers = [load_teacher(device=d, attn_implementation=attention) for d in devices]
 
     num_shards = len(devices)
-    shard_indices = [
-        list(range(i, n, num_shards)) for i in range(num_shards)
-    ]
+    shard_indices = [list(range(i, n, num_shards)) for i in range(num_shards)]
 
     temp_dirs: list[Path] = []
     if num_shards == 1:
@@ -329,9 +313,7 @@ def _embed_normalized(
         arrow_path = temp_dirs[0] / "data.arrow"
         return Dataset.from_file(str(arrow_path)), temp_dirs
 
-    shard_datasets = [
-        Dataset.from_file(str(d / "data.arrow")) for d in temp_dirs
-    ]
+    shard_datasets = [Dataset.from_file(str(d / "data.arrow")) for d in temp_dirs]
     return concatenate_datasets(shard_datasets), temp_dirs
 
 

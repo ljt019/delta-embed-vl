@@ -1,9 +1,12 @@
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, cast
 
 from datasets import Dataset, Image, Sequence, concatenate_datasets, load_dataset
+
+logger = logging.getLogger(__name__)
 
 ### Public
 
@@ -107,40 +110,30 @@ def _load_or_extend_raw_cache(name: str, *, rows: int | None) -> Dataset:
 
     if rows is None:
         if cached_dataset is not None and cache_complete:
-            print(
-                "raw_cache_hit",
-                {
-                    "name": name,
-                    "requested_rows": "all",
-                    "cached_rows": cached_rows,
-                    "complete": cache_complete,
-                    "path": str(cache_dir),
-                },
+            logger.debug(
+                "raw_cache_hit name=%s requested=all cached=%d path=%s",
+                name,
+                cached_rows,
+                cache_dir,
             )
             return cached_dataset
-        print(
-            "raw_cache_materialize_full",
-            {
-                "name": name,
-                "cached_rows": cached_rows,
-                "complete": cache_complete,
-                "path": str(cache_dir),
-            },
+        logger.debug(
+            "raw_cache_materialize_full name=%s cached=%d path=%s",
+            name,
+            cached_rows,
+            cache_dir,
         )
         dataset = _materialize_full_raw_data(name)
         _save_raw_cache(cache_dir, dataset, complete=True)
         return dataset
 
     if cached_dataset is not None and cached_rows >= rows:
-        print(
-            "raw_cache_hit",
-            {
-                "name": name,
-                "requested_rows": rows,
-                "cached_rows": cached_rows,
-                "complete": cache_complete,
-                "path": str(cache_dir),
-            },
+        logger.debug(
+            "raw_cache_hit name=%s requested=%d cached=%d path=%s",
+            name,
+            rows,
+            cached_rows,
+            cache_dir,
         )
         return (
             cached_dataset
@@ -149,27 +142,22 @@ def _load_or_extend_raw_cache(name: str, *, rows: int | None) -> Dataset:
         )
 
     if cached_dataset is not None and cache_complete:
-        print(
-            "raw_cache_hit_exhausted",
-            {
-                "name": name,
-                "requested_rows": rows,
-                "cached_rows": cached_rows,
-                "complete": cache_complete,
-                "path": str(cache_dir),
-            },
+        logger.debug(
+            "raw_cache_hit_exhausted name=%s requested=%d cached=%d path=%s",
+            name,
+            rows,
+            cached_rows,
+            cache_dir,
         )
         return cached_dataset
 
-    print(
+    logger.debug(
+        "%s name=%s requested=%d cached=%d path=%s",
         "raw_cache_extend" if cached_dataset is not None else "raw_cache_miss",
-        {
-            "name": name,
-            "requested_rows": rows,
-            "cached_rows": cached_rows,
-            "complete": cache_complete,
-            "path": str(cache_dir),
-        },
+        name,
+        rows,
+        cached_rows,
+        cache_dir,
     )
 
     dataset = _extend_raw_cache(
@@ -239,15 +227,13 @@ def _extend_raw_cache(
 
     cache_complete = len(fetched_rows) < missing_rows
     _save_raw_cache(cache_dir, dataset, complete=cache_complete)
-    print(
-        "raw_cache_saved",
-        {
-            "name": name,
-            "requested_rows": rows,
-            "cached_rows": len(dataset),
-            "complete": cache_complete,
-            "path": str(cache_dir),
-        },
+    logger.debug(
+        "raw_cache_saved name=%s requested=%d cached=%d complete=%s path=%s",
+        name,
+        rows,
+        len(dataset),
+        cache_complete,
+        cache_dir,
     )
     return dataset
 
