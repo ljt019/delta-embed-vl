@@ -7,19 +7,15 @@ from typing import cast
 
 import torch
 import torch.nn as nn
-from transformers import (
-    AutoProcessor,
-    Qwen3_5Model,
-    Qwen3VLProcessor,
-)
+from transformers import AutoProcessor, Qwen3_5Model, Qwen3VLProcessor
 from transformers.utils import is_flash_attn_2_available
 
-from delta_embed_vl.model.embedding_inputs import (
+from delta_embed_vl.model.pooling import last_token_pool, normalize
+from delta_embed_vl.model.tokenization import (
     EmbeddingInput,
     build_student_batch,
     get_processor_tokenizer,
 )
-from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -96,7 +92,6 @@ def load_student(
     output_dim: int | None = None,
     attn_implementation: str | None = None,
 ) -> tuple[Qwen3_5Model, Qwen3VLProcessor, nn.Module]:
-    """Load the student backbone and multimodal processor."""
     if device.startswith("cuda"):
         resolved_attn_implementation = attn_implementation or (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
@@ -112,6 +107,7 @@ def load_student(
             model_id,
             torch_dtype=dtype,
         )
+
     model = nn.Module.to(model, device=torch.device(device))
     processor = cast(
         Qwen3VLProcessor,
@@ -138,7 +134,6 @@ def embed(
     *,
     max_length: int = 512,
 ) -> torch.Tensor:
-    """Encode multimodal samples into normalized embeddings."""
     inputs = build_student_batch(
         processor,
         samples,

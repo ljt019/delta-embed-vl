@@ -5,7 +5,7 @@ Distills Qwen3-VL-Embedding-8B into Qwen3.5-0.8B-Base - a natively multimodal vi
 ## Pipeline
 
 ```
-download → preprocess → local teacher/student distill → MTEB eval
+prepare dataset → student distill → MTEB eval
 ```
 
 **Data sources:** Wikipedia (text) + [The Cauldron](https://huggingface.co/datasets/HuggingFaceM4/the_cauldron) (30 multimodal VQA/captioning/OCR/chart/table configs).
@@ -33,18 +33,20 @@ uv run delta-embed-pipeline \
   --teacher-batch-size 8 \
   --batch-size 8 \
   --grad-accum-steps 4 \
-  --max-length 8192 \
+  --max-length 2048 \
   --epochs 3
 ```
 
 ### Individual stages
 
 ```bash
-uv run prepare-data
-uv run train-model \
+uv run prepare-data \
   --teacher-device cuda:0 \
-  --student-device cuda:1 \
   --teacher-batch-size 8 \
+  --max-length 2048
+uv run train-model \
+  --dataset-path data/prepared/balanced-all_student-qwen3-5-0-8b-base_teacher-qwen3-vl-embedding-8b_maxlen-2048 \
+  --student-device cuda:1 \
   --batch-size 8
 uv run eval-model
 ```
@@ -54,13 +56,16 @@ uv run eval-model
 ```bash
 uv run scripts/check_teacher.py --device cuda:0 --image-size 64
 uv run scripts/check_student.py --device cuda:1 --image-size 64
-uv run train-model \
+uv run prepare-data \
   --limit 8 \
+  --teacher-device cuda:0 \
+  --teacher-batch-size 2 \
+  --max-length 2048
+uv run train-model \
+  --dataset-path data/prepared/limit-8_student-qwen3-5-0-8b-base_teacher-qwen3-vl-embedding-8b_maxlen-2048 \
   --epochs 1 \
   --batch-size 2 \
-  --teacher-batch-size 2 \
-  --max-length 8192 \
-  --teacher-device cuda:0 \
+  --max-length 2048 \
   --student-device cuda:1
 ```
 
@@ -68,13 +73,14 @@ uv run train-model \
 
 ```
 src/delta_embed_vl/
-  data/        download, preprocess, dataloader
-  teacher/     teacher length audit utilities
-  model/       teacher + student model loading, pooling
-  training/    local teacher-student distillation loop
-  eval/        MTEB evaluation wrapper
-  main.py      CLI entrypoints
-  settings.py  configuration (data_dir, teacher model, token limits)
+  prepare_data.py  prepare-stage API + CLI
+  train.py         train-stage logic + CLI
+  eval.py          eval orchestration + CLI
+  pipeline.py      end-to-end orchestration CLI
+  data/            raw sources + teacher embed + dataset build
+  model/           tokenization + embedding model loading + pooling
+  evals/           concrete eval implementations
+  settings.py      configuration
 scripts/
   check_teacher.py   smoke test local teacher embeddings
   check_student.py   smoke test local student embeddings

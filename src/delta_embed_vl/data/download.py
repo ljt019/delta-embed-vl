@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 from typing import Any, cast
@@ -77,7 +78,7 @@ def load_raw_cauldron(config: str, *, limit: int | None = None) -> Dataset:
 ### Private
 
 _RAW_DATA_DIR = Settings().data_dir / "raw"
-_RAW_SUBSET_CACHE_DIR = Settings().data_dir / "raw_subsets"
+_CACHE_META_FILENAME = "_cache_meta.json"
 
 _DATASET_REGISTRY = {
     "wikipedia": ("wikimedia/wikipedia", WIKIPEDIA_CONFIG, "train"),
@@ -89,12 +90,10 @@ _DATASET_REGISTRY = {
 
 
 def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
-    """Load a raw dataset. If limit is set, stream and cache only the first N rows."""
-    if limit is not None:
-        if limit < 1:
-            raise ValueError("limit must be at least 1.")
-        return _load_raw_subset(name, rows=limit)
-    return _load_full_raw_data(name)
+    """Load raw data from a single canonical local cache under data/raw/<source>."""
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1.")
+    return _load_or_extend_raw_cache(name, rows=limit)
 
 
 def _get_dataset_entry(name: str) -> tuple[str, str, str]:
@@ -104,61 +103,115 @@ def _get_dataset_entry(name: str) -> tuple[str, str, str]:
     return _DATASET_REGISTRY[name]
 
 
-def _load_full_raw_data(name: str) -> Dataset:
+def _load_or_extend_raw_cache(name: str, *, rows: int | None) -> Dataset:
+    cache_dir = _raw_cache_dir(name)
+    cached_dataset: Dataset | None = None
+    cached_rows = 0
+    cache_complete = False
+
+    if _is_saved_dataset(cache_dir):
+        cached_dataset = Dataset.load_from_disk(str(cache_dir))
+        cached_rows = len(cached_dataset)
+        cache_complete = _read_cache_complete(cache_dir)
+
+    if rows is None:
+        if cached_dataset is not None and cache_complete:
+            print(
+                "raw_cache_hit",
+                {
+                    "name": name,
+                    "requested_rows": "all",
+                    "cached_rows": cached_rows,
+                    "complete": cache_complete,
+                    "path": str(cache_dir),
+                },
+            )
+            return cached_dataset
+        print(
+            "raw_cache_materialize_full",
+            {
+                "name": name,
+                "cached_rows": cached_rows,
+                "complete": cache_complete,
+                "path": str(cache_dir),
+            },
+        )
+        dataset = _materialize_full_raw_data(name)
+        _save_raw_cache(cache_dir, dataset, complete=True)
+        return dataset
+
+    if cached_dataset is not None and cached_rows >= rows:
+        print(
+            "raw_cache_hit",
+            {
+                "name": name,
+                "requested_rows": rows,
+                "cached_rows": cached_rows,
+                "complete": cache_complete,
+                "path": str(cache_dir),
+            },
+        )
+        return (
+            cached_dataset
+            if cached_rows == rows
+            else cached_dataset.select(range(rows))
+        )
+
+    if cached_dataset is not None and cache_complete:
+        print(
+            "raw_cache_hit_exhausted",
+            {
+                "name": name,
+                "requested_rows": rows,
+                "cached_rows": cached_rows,
+                "complete": cache_complete,
+                "path": str(cache_dir),
+            },
+        )
+        return cached_dataset
+
+    print(
+        "raw_cache_extend" if cached_dataset is not None else "raw_cache_miss",
+        {
+            "name": name,
+            "requested_rows": rows,
+            "cached_rows": cached_rows,
+            "complete": cache_complete,
+            "path": str(cache_dir),
+        },
+    )
+
+    dataset = _extend_raw_cache(
+        name,
+        cache_dir=cache_dir,
+        cached_dataset=cached_dataset,
+        cached_rows=cached_rows,
+        rows=rows,
+    )
+    if len(dataset) <= rows:
+        return dataset
+    return dataset.select(range(rows))
+
+
+def _materialize_full_raw_data(name: str) -> Dataset:
     dataset_id, config, split = _get_dataset_entry(name)
     dataset = load_dataset(
         dataset_id,
         config,
         split=split,
-        cache_dir=str(_RAW_DATA_DIR / name),
     )
     return _cast_cauldron_images(name, dataset)
 
 
-def _load_raw_subset(name: str, *, rows: int) -> Dataset:
+def _extend_raw_cache(
+    name: str,
+    *,
+    cache_dir: Path,
+    cached_dataset: Dataset | None,
+    cached_rows: int,
+    rows: int,
+) -> Dataset:
     dataset_id, config, _ = _get_dataset_entry(name)
-    cache_dir = _subset_cache_dir(name)
-    cached_dataset: Dataset | None = None
-    cached_rows = 0
-
-    if _is_saved_dataset(cache_dir):
-        cached_dataset = Dataset.load_from_disk(str(cache_dir))
-        cached_rows = len(cached_dataset)
-
-    if cached_dataset is not None:
-        if cached_rows >= rows:
-            print(
-                "raw_subset_cache_hit",
-                {
-                    "name": name,
-                    "requested_rows": rows,
-                    "cached_rows": cached_rows,
-                    "path": str(cache_dir),
-                },
-            )
-            if cached_rows == rows:
-                return cached_dataset
-            return cached_dataset.select(range(rows))
-        print(
-            "raw_subset_cache_extend",
-            {
-                "name": name,
-                "requested_rows": rows,
-                "cached_rows": cached_rows,
-                "missing_rows": rows - cached_rows,
-                "path": str(cache_dir),
-            },
-        )
-    else:
-        print(
-            "raw_subset_cache_miss",
-            {
-                "name": name,
-                "requested_rows": rows,
-                "path": str(cache_dir),
-            },
-        )
-
     stream = load_dataset(
         dataset_id,
         config,
@@ -174,7 +227,8 @@ def _load_raw_subset(name: str, *, rows: int) -> Dataset:
     if cached_rows > 0:
         stream = stream.skip(cached_rows)
 
-    fetched_rows = list(stream.take(rows - cached_rows))
+    missing_rows = rows - cached_rows
+    fetched_rows = list(stream.take(missing_rows))
     if not fetched_rows and cached_dataset is None:
         raise ValueError(
             f"Failed to load any rows for dataset_id={dataset_id} config={config}."
@@ -183,7 +237,7 @@ def _load_raw_subset(name: str, *, rows: int) -> Dataset:
     if cached_dataset is None:
         dataset = Dataset.from_list(fetched_rows)
     elif not fetched_rows:
-        return cached_dataset
+        dataset = cached_dataset
     else:
         dataset = concatenate_datasets(
             [
@@ -192,21 +246,19 @@ def _load_raw_subset(name: str, *, rows: int) -> Dataset:
             ]
         )
 
-    _save_subset_cache(cache_dir, dataset)
+    cache_complete = len(fetched_rows) < missing_rows
+    _save_raw_cache(cache_dir, dataset, complete=cache_complete)
     print(
-        "raw_subset_cache_saved",
+        "raw_cache_saved",
         {
             "name": name,
             "requested_rows": rows,
             "cached_rows": len(dataset),
+            "complete": cache_complete,
             "path": str(cache_dir),
         },
     )
-    if len(dataset) == rows:
-        return dataset
-    if len(dataset) < rows:
-        return dataset
-    return dataset.select(range(rows))
+    return dataset
 
 
 def _cast_cauldron_images(name: str, dataset: Dataset) -> Dataset:
@@ -215,21 +267,37 @@ def _cast_cauldron_images(name: str, dataset: Dataset) -> Dataset:
     return dataset.cast_column("images", Sequence(Image(decode=False)))
 
 
-def _subset_cache_dir(name: str) -> Path:
-    return _RAW_SUBSET_CACHE_DIR / name
+def _raw_cache_dir(name: str) -> Path:
+    return _RAW_DATA_DIR / name
 
 
 def _is_saved_dataset(path: Path) -> bool:
     return (path / "dataset_info.json").exists() or (path / "state.json").exists()
 
 
-def _save_subset_cache(cache_dir: Path, dataset: Dataset) -> None:
+def _save_raw_cache(cache_dir: Path, dataset: Dataset, *, complete: bool) -> None:
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = cache_dir.with_name(f"{cache_dir.name}.tmp")
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
 
     dataset.save_to_disk(str(temp_dir))
+    _write_cache_meta(temp_dir, complete=complete)
     if cache_dir.exists():
         shutil.rmtree(cache_dir)
     temp_dir.replace(cache_dir)
+
+
+def _read_cache_complete(path: Path) -> bool:
+    meta_path = path / _CACHE_META_FILENAME
+    if not meta_path.exists():
+        return False
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    return bool(metadata.get("complete", False))
+
+
+def _write_cache_meta(path: Path, *, complete: bool) -> None:
+    (path / _CACHE_META_FILENAME).write_text(
+        json.dumps({"complete": complete}),
+        encoding="utf-8",
+    )

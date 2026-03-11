@@ -9,28 +9,16 @@ import torch.nn as nn
 from transformers import AutoProcessor, Qwen3VLModel, Qwen3VLProcessor
 from transformers.utils import is_flash_attn_2_available
 
-from delta_embed_vl.model.embedding_inputs import (
+from delta_embed_vl.model.pooling import last_token_pool, normalize
+from delta_embed_vl.model.tokenization import (
     EmbeddingInput,
     build_teacher_batch,
     get_processor_tokenizer,
 )
-from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-_settings = Settings()
-
-
-def _get_hidden_size(model: Qwen3VLModel) -> int:
-    hidden_size = getattr(model.config, "hidden_size", None)
-    if hidden_size is not None:
-        return int(hidden_size)
-
-    text_config = getattr(model.config, "text_config", None)
-    if text_config is not None and hasattr(text_config, "hidden_size"):
-        return int(text_config.hidden_size)
-
-    raise AttributeError("Could not determine teacher hidden size from model config.")
+_SETTINGS = Settings()
 
 
 @dataclass
@@ -51,8 +39,20 @@ class TeacherEmbedder:
         return normalize(pooled.float())
 
 
+def _get_teacher_hidden_size(model: Qwen3VLModel) -> int:
+    hidden_size = getattr(model.config, "hidden_size", None)
+    if hidden_size is not None:
+        return int(hidden_size)
+
+    text_config = getattr(model.config, "text_config", None)
+    if text_config is not None and hasattr(text_config, "hidden_size"):
+        return int(text_config.hidden_size)
+
+    raise AttributeError("Could not determine teacher hidden size from model config.")
+
+
 def load_teacher(
-    model_id: str = _settings.teacher_model,
+    model_id: str = _SETTINGS.teacher_model,
     *,
     device: str = "cuda:0",
     dtype: torch.dtype = torch.bfloat16,
@@ -95,5 +95,5 @@ def load_teacher(
         model=model,
         processor=processor,
         device=torch.device(device),
-        output_dim=_get_hidden_size(model),
+        output_dim=_get_teacher_hidden_size(model),
     )

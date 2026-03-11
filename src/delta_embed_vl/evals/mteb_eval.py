@@ -15,13 +15,13 @@ from typing_extensions import Unpack
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
-from delta_embed_vl.model.embedding_inputs import EmbeddingInput, build_student_batch
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import (
     STUDENT_MODEL_ID,
     get_embedding_dim,
     load_student,
 )
+from delta_embed_vl.model.tokenization import EmbeddingInput, build_student_batch
 from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)

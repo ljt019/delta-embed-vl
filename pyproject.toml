@@ -36,11 +36,9 @@ accel = [
 
 
 [project.scripts]
-prepare-data = "delta_embed_vl.main:prepare_data_cli"
-train-model = "delta_embed_vl.main:train_model_cli"
-eval-model = "delta_embed_vl.main:eval_model_cli"
-delta-embed-pipeline = "delta_embed_vl.main:main"
-audit-teacher-lengths = "delta_embed_vl.teacher.audit:length_audit_cli"
+prepare = "delta_embed_vl.prepare:prepare_data_cli"
+train = "delta_embed_vl.train:train_model_cli"
+eval = "delta_embed_vl.eval:eval_model_cli"
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
