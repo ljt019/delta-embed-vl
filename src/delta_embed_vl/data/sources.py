@@ -423,7 +423,7 @@ def load_all_samples(
     limit: int | None = None,
     limit_all: bool = False,
     student_max_length: int = cfg["max_length"],
-    wikipedia_ratio: float = cfg["data"]["wikipedia_ratio"],
+    text_only_ratio: float = cfg["data"]["text_only_ratio"],
 ) -> Iterator[NormalizedSample]:
     if not limit_all:
         yield from wikipedia_samples(
@@ -444,7 +444,7 @@ def load_all_samples(
         total_cauldron_samples += 1
         yield sample
 
-    target_wiki_samples = max(1, round(total_cauldron_samples * wikipedia_ratio))
+    target_wiki_samples = max(1, round(total_cauldron_samples * text_only_ratio))
     actual_wiki_samples = 0
     for sample in wikipedia_samples(
         limit=None,
@@ -455,9 +455,9 @@ def load_all_samples(
         yield sample
 
     logger.info(
-        "Balanced mode: cauldron_samples=%d wikipedia_ratio=%.2f target_wiki=%d actual_wiki=%d",
+        "Balanced mode: cauldron_samples=%d text_only_ratio=%.2f target_wiki=%d actual_wiki=%d",
         total_cauldron_samples,
-        wikipedia_ratio,
+        text_only_ratio,
         target_wiki_samples,
         actual_wiki_samples,
     )

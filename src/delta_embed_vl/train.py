@@ -196,7 +196,6 @@ def train_model(*, push_to_hub: bool = False) -> None:
     if cfg["wandb"]["project"] is not None:
         wandb_run = wandb.init(
             project=cfg["wandb"]["project"],
-            name=cfg["wandb"]["name"],
             config=cfg,
         )
 
@@ -353,7 +352,7 @@ def train_model(*, push_to_hub: bool = False) -> None:
                         processor=processor,
                         save_dir=Path(save_dir),
                         step=global_step,
-                        keep=cfg["ckpt"]["keep"],
+                        keep=cfg["ckpt"]["max_saves"],
                     )
 
                 if (

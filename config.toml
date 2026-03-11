@@ -16,17 +16,15 @@ seed = 42
 id = "ljt019/delta-embed-vl-dataset" 
 model_id = "Qwen/Qwen3-VL-Embedding-8B"
 batch_size = 128
-wikipedia_ratio = 0.4
-save_interval = 100
+text_only_ratio = 0.4
 
 [ckpt]
-save_interval = 15 
-max_save_num = 5 
+interval = 15 
+max_saves = 5 
 
 [wandb]
 project = "delta-embed-vl" 
-name = "dev"
-save_interval = 1
+interval = 20
 
 [log]
-level = "debug" 
+level = "info" 
