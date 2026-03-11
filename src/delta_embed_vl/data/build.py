@@ -298,7 +298,7 @@ def _embed_normalized(
     gpu_available = devices[0].startswith("cuda")
     if gpu_available:
         peak_pct = max(r[2] for r in shard_results)
-        if peak_pct < 50:
+        if peak_pct < 80:
             logger.warning(
                 "GPU utilization peaked at %.0f%% — increase data.batch_size "
                 "in config.toml for faster prep",
