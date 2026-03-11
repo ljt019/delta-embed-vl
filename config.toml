@@ -15,7 +15,7 @@ seed = 42
 [data]
 id = "ljt019/delta-embed-vl-10000" 
 model_id = "Qwen/Qwen3-VL-Embedding-8B"
-batch_size = 128
+batch_size = 64
 text_only_ratio = 0.4
 
 [ckpt]
