@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from collections.abc import Iterator
@@ -101,15 +102,41 @@ def build_dataset(
         dataset.push_to_hub(hub_id, split="train")
 
 
+_NORMALIZED_META = _NORMALIZED_DIR / "_meta.json"
+
+
+def _normalized_cache_valid(limit: int | None, limit_all: bool) -> bool:
+    if not _is_saved_dataset(_NORMALIZED_DIR) or not _NORMALIZED_META.exists():
+        return False
+    meta = json.loads(_NORMALIZED_META.read_text())
+    cached_all = meta.get("limit_all", False)
+    cached_limit = meta.get("limit")
+
+    if limit_all:
+        return cached_all
+    if cached_all:
+        return True
+    if cached_limit is None:
+        return False
+    return limit is not None and cached_limit >= limit
+
+
+def _write_normalized_meta(limit: int | None, limit_all: bool) -> None:
+    _NORMALIZED_META.write_text(json.dumps({"limit": limit, "limit_all": limit_all}))
+
+
 def _load_or_build_normalized(
     *,
     limit: int | None,
     limit_all: bool,
     max_length: int,
 ) -> Dataset:
-    if _is_saved_dataset(_NORMALIZED_DIR):
+    if _normalized_cache_valid(limit, limit_all):
         logger.info("Normalized cache hit: %s", _NORMALIZED_DIR)
         return Dataset.load_from_disk(str(_NORMALIZED_DIR))
+
+    if _is_saved_dataset(_NORMALIZED_DIR):
+        logger.info("Normalized cache stale, rebuilding")
 
     logger.info("Normalizing samples")
     temp_dir = _NORMALIZED_DIR.with_name("normalized.build")
@@ -139,6 +166,7 @@ def _load_or_build_normalized(
         dataset = Dataset.from_file(str(arrow_path))
 
     _save_dataset(dataset, _NORMALIZED_DIR)
+    _write_normalized_meta(limit, limit_all)
     shutil.rmtree(temp_dir, ignore_errors=True)
     return dataset
 
