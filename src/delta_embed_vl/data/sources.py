@@ -4,7 +4,6 @@ import io
 import logging
 import re
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -294,8 +293,17 @@ def wikipedia_samples(
     limit: int | None = None,
     student_max_length: int = cfg["max_length"],
     max_output_samples: int | None = None,
+    no_stream: bool = False,
+    shard_index: int = 0,
+    num_shards: int = 1,
 ) -> Iterator[NormalizedSample]:
-    raw_dataset = load_raw_wikipedia(limit=limit)
+    raw_dataset = load_raw_wikipedia(limit=limit, no_stream=no_stream)
+    if num_shards > 1:
+        raw_dataset = raw_dataset.shard(
+            num_shards=num_shards,
+            index=shard_index,
+            contiguous=True,
+        )
     buffer: list[NormalizedSample] = []
     emitted = 0
 
@@ -341,9 +349,18 @@ def cauldron_config_samples(
     *,
     limit: int | None = None,
     student_max_length: int = cfg["max_length"],
+    no_stream: bool = False,
+    shard_index: int = 0,
+    num_shards: int = 1,
 ) -> Iterator[NormalizedSample]:
     source = f"cauldron/{config}"
-    raw_dataset = load_raw_cauldron(config, limit=limit)
+    raw_dataset = load_raw_cauldron(config, limit=limit, no_stream=no_stream)
+    if num_shards > 1:
+        raw_dataset = raw_dataset.shard(
+            num_shards=num_shards,
+            index=shard_index,
+            contiguous=True,
+        )
 
     for source_row, raw_row in enumerate(raw_dataset):
         turns, raw_images = _validate_cauldron_turns(
@@ -406,57 +423,41 @@ def cauldron_config_samples(
             )
 
 
-def _prefetch_cauldron_raw(*, limit: int | None, no_stream: bool = False) -> None:
-    """Download all cauldron configs in parallel so they're cached for iteration."""
-
-    def _fetch(config: str) -> str:
-        load_raw_cauldron(config, limit=limit, no_stream=no_stream)
-        return config
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(_fetch, c): c for c in CAULDRON_CONFIGS}
-        for fut in as_completed(futures):
-            config = futures[fut]
-            try:
-                fut.result()
-            except Exception:
-                logger.exception("Failed to prefetch cauldron/%s", config)
-                raise
+def normalization_source_names() -> list[str]:
+    return ["wikipedia", *[f"cauldron/{config}" for config in CAULDRON_CONFIGS]]
 
 
-def cauldron_samples(
+def iter_source_samples(
+    source: str,
     *,
     limit: int | None = None,
-    student_max_length: int = cfg["max_length"],
-) -> Iterator[NormalizedSample]:
-    for config in CAULDRON_CONFIGS:
-        yield from cauldron_config_samples(
-            config,
-            limit=limit,
-            student_max_length=student_max_length,
-        )
-
-
-def load_all_samples(
-    *,
-    limit: int | None = None,
-    limit_all: bool = False,
     student_max_length: int = cfg["max_length"],
     no_stream: bool = False,
+    shard_index: int = 0,
+    num_shards: int = 1,
 ) -> Iterator[NormalizedSample]:
-    resolved_limit = limit if not limit_all else None
+    if source == "wikipedia":
+        yield from wikipedia_samples(
+            limit=limit,
+            student_max_length=student_max_length,
+            no_stream=no_stream,
+            shard_index=shard_index,
+            num_shards=num_shards,
+        )
+        return
 
-    logger.info("Prefetching raw data in parallel")
-    _prefetch_cauldron_raw(limit=resolved_limit, no_stream=no_stream)
+    if source.startswith("cauldron/"):
+        yield from cauldron_config_samples(
+            source.removeprefix("cauldron/"),
+            limit=limit,
+            student_max_length=student_max_length,
+            no_stream=no_stream,
+            shard_index=shard_index,
+            num_shards=num_shards,
+        )
+        return
 
-    if no_stream:
-        load_raw_wikipedia(limit=resolved_limit, no_stream=True)
-
-    yield from wikipedia_samples(
-        limit=resolved_limit,
-        student_max_length=student_max_length,
-    )
-    yield from cauldron_samples(
-        limit=resolved_limit,
-        student_max_length=student_max_length,
+    supported_sources = ", ".join(normalization_source_names())
+    raise ValueError(
+        f"Unknown normalization source: {source}. Supported: {supported_sources}"
     )

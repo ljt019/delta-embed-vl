@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import os
 import shutil
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import tempfile
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -18,10 +21,10 @@ from datasets import (
 )
 from datasets import Image as HFImage
 from datasets.arrow_writer import ArrowWriter
-from PIL import Image
 
 from delta_embed_vl import cfg
-from delta_embed_vl.data.sources import load_all_samples
+from delta_embed_vl.data.download import load_raw_wikipedia
+from delta_embed_vl.data.sources import iter_source_samples, normalization_source_names
 from delta_embed_vl.data.teacher import TeacherEmbedder, load_teacher
 from delta_embed_vl.model.tokenization import DEFAULT_EMBED_INSTRUCTION, EmbeddingInput
 
@@ -49,6 +52,16 @@ _DATASET_FEATURES = Features(
         "teacher_embedding": Sequence(Value("float32")),
     }
 )
+
+_NORMALIZED_WRITE_BATCH_SIZE = 512
+_MIN_RAW_ROWS_PER_WIKIPEDIA_TASK = 512
+
+
+@dataclass(frozen=True)
+class NormalizationTask:
+    source: str
+    shard_index: int = 0
+    num_shards: int = 1
 
 
 def load_training_dataset() -> Dataset:
@@ -141,54 +154,169 @@ def _load_or_build_normalized(
     if _is_saved_dataset(_NORMALIZED_DIR):
         logger.info("Normalized cache stale, rebuilding")
 
-    logger.info("Normalizing samples")
-    temp_dir = _NORMALIZED_DIR.with_name("normalized.build")
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    resolved_limit = None if limit_all else limit
+    tasks = _plan_normalization_tasks(limit=resolved_limit)
+    cpu_workers = _detect_cpu_workers(len(tasks))
+    available_cpus = _detect_available_cpu_count()
+    logger.info(
+        "Normalizing samples across %d CPU worker(s) (detected=%d, tasks=%d)",
+        cpu_workers,
+        available_cpus,
+        len(tasks),
+    )
+
+    wikipedia_shards = max(
+        (task.num_shards for task in tasks if task.source == "wikipedia"),
+        default=1,
+    )
+    if wikipedia_shards > 1:
+        logger.info("Priming wikipedia raw cache for %d shard(s)", wikipedia_shards)
+        load_raw_wikipedia(limit=resolved_limit, no_stream=no_stream)
+
+    temp_root = _NORMALIZED_DIR.with_name("normalized.build")
+    if temp_root.exists():
+        shutil.rmtree(temp_root)
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        task_results: dict[int, tuple[str, int]] = {}
+        if cpu_workers == 1:
+            for idx, task in enumerate(tasks):
+                task_results[idx] = _normalize_task_to_arrow(
+                    task,
+                    limit=resolved_limit,
+                    max_length=max_length,
+                    no_stream=no_stream,
+                    temp_root=str(temp_root),
+                )
+                logger.info(
+                    "Normalized %s: rows=%d (%d/%d)",
+                    _normalization_task_label(task),
+                    task_results[idx][1],
+                    idx + 1,
+                    len(tasks),
+                )
+        else:
+            with ProcessPoolExecutor(max_workers=cpu_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _normalize_task_to_arrow,
+                        task,
+                        limit=resolved_limit,
+                        max_length=max_length,
+                        no_stream=no_stream,
+                        temp_root=str(temp_root),
+                    ): idx
+                    for idx, task in enumerate(tasks)
+                }
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    idx = futures[future]
+                    task_results[idx] = future.result()
+                    logger.info(
+                        "Normalized %s: rows=%d (%d/%d)",
+                        _normalization_task_label(tasks[idx]),
+                        task_results[idx][1],
+                        completed,
+                        len(tasks),
+                    )
+
+        ordered_results = [task_results[i] for i in range(len(tasks))]
+        rows_written = sum(rows for _, rows in ordered_results)
+        logger.info("Normalized %d samples", rows_written)
+
+        shard_datasets = [
+            Dataset.from_file(str(Path(temp_dir) / "data.arrow"))
+            for temp_dir, rows in ordered_results
+            if rows > 0
+        ]
+        if not shard_datasets:
+            dataset = Dataset.from_dict(
+                {name: [] for name in _NORMALIZED_FEATURES},
+                features=_NORMALIZED_FEATURES,
+            )
+        elif len(shard_datasets) == 1:
+            dataset = shard_datasets[0]
+        else:
+            dataset = concatenate_datasets(shard_datasets)
+
+        _save_dataset(dataset, _NORMALIZED_DIR)
+        _write_normalized_meta(limit, limit_all)
+        return dataset
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def _detect_available_cpu_count() -> int:
+    cpu_counter = getattr(os, "process_cpu_count", os.cpu_count)
+    return max(1, cpu_counter() or 1)
+
+
+def _detect_cpu_workers(num_tasks: int) -> int:
+    return max(1, min(_detect_available_cpu_count(), num_tasks))
+
+
+def _plan_normalization_tasks(*, limit: int | None) -> list[NormalizationTask]:
+    sources = normalization_source_names()
+    non_wikipedia_sources = [source for source in sources if source != "wikipedia"]
+    max_wikipedia_shards = max(
+        1, _detect_available_cpu_count() - len(non_wikipedia_sources)
+    )
+    if limit is None:
+        wikipedia_shards = max_wikipedia_shards
+    else:
+        wikipedia_shards = min(
+            max_wikipedia_shards,
+            max(1, math.ceil(limit / _MIN_RAW_ROWS_PER_WIKIPEDIA_TASK)),
+        )
+
+    return [
+        *[
+            NormalizationTask(
+                source="wikipedia",
+                shard_index=shard_index,
+                num_shards=wikipedia_shards,
+            )
+            for shard_index in range(wikipedia_shards)
+        ],
+        *[NormalizationTask(source=source) for source in non_wikipedia_sources],
+    ]
+
+
+def _normalization_task_label(task: NormalizationTask) -> str:
+    if task.num_shards == 1:
+        return task.source
+    return f"{task.source}[{task.shard_index + 1}/{task.num_shards}]"
+
+
+def _normalize_task_to_arrow(
+    task: NormalizationTask,
+    *,
+    limit: int | None,
+    max_length: int,
+    no_stream: bool,
+    temp_root: str,
+) -> tuple[str, int]:
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+    source_slug = task.source.replace("/", "-")
+    temp_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"normalized-{source_slug}-{task.shard_index}-",
+            dir=temp_root,
+        )
+    )
     arrow_path = temp_dir / "data.arrow"
     writer = ArrowWriter(path=str(arrow_path), features=_NORMALIZED_FEATURES)
     rows_written = 0
-
-    for batch in _normalize_batches(
-        limit=limit,
-        limit_all=limit_all,
-        max_length=max_length,
-        no_stream=no_stream,
-    ):
-        writer.write_batch(batch)
-        rows_written += len(batch["source"])
-    writer.finalize()
-    logger.info("Normalized %d samples", rows_written)
-
-    if rows_written == 0:
-        dataset = Dataset.from_dict(
-            {name: [] for name in _NORMALIZED_FEATURES},
-            features=_NORMALIZED_FEATURES,
-        )
-    else:
-        dataset = Dataset.from_file(str(arrow_path))
-
-    _save_dataset(dataset, _NORMALIZED_DIR)
-    _write_normalized_meta(limit, limit_all)
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    return dataset
-
-
-def _normalize_batches(
-    *,
-    limit: int | None,
-    limit_all: bool,
-    max_length: int,
-    no_stream: bool = False,
-) -> Iterator[dict[str, list[object]]]:
     buffer: list[dict[str, object]] = []
-    batch_size = 512
-    for sample in load_all_samples(
+
+    for sample in iter_source_samples(
+        task.source,
         limit=limit,
-        limit_all=limit_all,
         student_max_length=max_length,
         no_stream=no_stream,
+        shard_index=task.shard_index,
+        num_shards=task.num_shards,
     ):
         buffer.append(
             {
@@ -199,12 +327,18 @@ def _normalize_batches(
                 "role": sample.role,
             }
         )
-        if len(buffer) < batch_size:
+        if len(buffer) < _NORMALIZED_WRITE_BATCH_SIZE:
             continue
-        yield _flush_buffer(buffer)
+        writer.write_batch(_flush_buffer(buffer))
+        rows_written += len(buffer)
         buffer = []
+
     if buffer:
-        yield _flush_buffer(buffer)
+        writer.write_batch(_flush_buffer(buffer))
+        rows_written += len(buffer)
+
+    writer.finalize()
+    return str(temp_dir), rows_written
 
 
 def _flush_buffer(buffer: list[dict[str, object]]) -> dict[str, list[object]]:
