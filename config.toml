@@ -15,7 +15,7 @@ seed = 42
 [data]
 id = "ljt019/delta-embed-vl-dataset" 
 model_id = "Qwen/Qwen3-VL-Embedding-8B"
-batch_size = 8
+batch_size = 128
 wikipedia_ratio = 0.4
 save_interval = 100
 
