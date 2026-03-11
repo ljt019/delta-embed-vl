@@ -55,18 +55,20 @@ CAULDRON_CONFIGS = [
 ]
 
 
-def load_raw_wikipedia(*, limit: int | None = None) -> Dataset:
-    return _load_raw_data("wikipedia", limit=limit)
+def load_raw_wikipedia(*, limit: int | None = None, no_stream: bool = False) -> Dataset:
+    return _load_raw_data("wikipedia", limit=limit, no_stream=no_stream)
 
 
-def load_raw_cauldron(config: str, *, limit: int | None = None) -> Dataset:
+def load_raw_cauldron(
+    config: str, *, limit: int | None = None, no_stream: bool = False
+) -> Dataset:
     """Load one raw Cauldron config by name, e.g. `vqav2`."""
     if config not in CAULDRON_CONFIGS:
         supported_configs = ", ".join(CAULDRON_CONFIGS)
         raise ValueError(
             f"Unknown Cauldron config: {config}. Supported: {supported_configs}"
         )
-    return _load_raw_data(f"cauldron/{config}", limit=limit)
+    return _load_raw_data(f"cauldron/{config}", limit=limit, no_stream=no_stream)
 
 
 ### Private
@@ -83,10 +85,14 @@ _DATASET_REGISTRY = {
 }
 
 
-def _load_raw_data(name: str, *, limit: int | None = None) -> Dataset:
+def _load_raw_data(
+    name: str, *, limit: int | None = None, no_stream: bool = False
+) -> Dataset:
     """Load raw data from a single canonical local cache under data/raw/<source>."""
     if limit is not None and limit < 1:
         raise ValueError("limit must be at least 1.")
+    if no_stream:
+        return _load_full_then_select(name, rows=limit)
     return _load_or_extend_raw_cache(name, rows=limit)
 
 
@@ -95,6 +101,20 @@ def _get_dataset_entry(name: str) -> tuple[str, str, str]:
         supported_names = ", ".join(sorted(_DATASET_REGISTRY.keys()))
         raise ValueError(f"Unknown dataset name: {name}. Supported: {supported_names}")
     return _DATASET_REGISTRY[name]
+
+
+def _load_full_then_select(name: str, *, rows: int | None) -> Dataset:
+    """Download the full dataset, cache it, then select requested rows."""
+    cache_dir = _raw_cache_dir(name)
+    if _is_saved_dataset(cache_dir) and _read_cache_complete(cache_dir):
+        dataset = Dataset.load_from_disk(str(cache_dir))
+    else:
+        logger.debug("no_stream full download name=%s", name)
+        dataset = _materialize_full_raw_data(name)
+        _save_raw_cache(cache_dir, dataset, complete=True)
+    if rows is not None and len(dataset) > rows:
+        return dataset.select(range(rows))
+    return dataset
 
 
 def _load_or_extend_raw_cache(name: str, *, rows: int | None) -> Dataset:

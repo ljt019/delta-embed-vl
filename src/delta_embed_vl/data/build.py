@@ -73,6 +73,7 @@ def build_dataset(
     teacher_batch_size: int = cfg["data"]["batch_size"],
     attention: str | None = None,
     push_to_hub: bool = False,
+    no_stream: bool = False,
 ) -> None:
     if teacher_batch_size < 1:
         raise ValueError("teacher_batch_size must be at least 1.")
@@ -81,6 +82,7 @@ def build_dataset(
         limit=limit,
         limit_all=limit_all,
         max_length=max_length,
+        no_stream=no_stream,
     )
 
     logger.info("Embedding normalized samples with teacher")
@@ -130,6 +132,7 @@ def _load_or_build_normalized(
     limit: int | None,
     limit_all: bool,
     max_length: int,
+    no_stream: bool = False,
 ) -> Dataset:
     if _normalized_cache_valid(limit, limit_all):
         logger.info("Normalized cache hit: %s", _NORMALIZED_DIR)
@@ -151,6 +154,7 @@ def _load_or_build_normalized(
         limit=limit,
         limit_all=limit_all,
         max_length=max_length,
+        no_stream=no_stream,
     ):
         writer.write_batch(batch)
         rows_written += len(batch["source"])
@@ -176,6 +180,7 @@ def _normalize_batches(
     limit: int | None,
     limit_all: bool,
     max_length: int,
+    no_stream: bool = False,
 ) -> Iterator[dict[str, list[object]]]:
     buffer: list[dict[str, object]] = []
     batch_size = 512
@@ -183,6 +188,7 @@ def _normalize_batches(
         limit=limit,
         limit_all=limit_all,
         student_max_length=max_length,
+        no_stream=no_stream,
     ):
         buffer.append(
             {

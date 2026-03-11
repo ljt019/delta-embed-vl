@@ -4,6 +4,7 @@ import io
 import logging
 import re
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
@@ -405,6 +406,24 @@ def cauldron_config_samples(
             )
 
 
+def _prefetch_cauldron_raw(*, limit: int | None, no_stream: bool = False) -> None:
+    """Download all cauldron configs in parallel so they're cached for iteration."""
+
+    def _fetch(config: str) -> str:
+        load_raw_cauldron(config, limit=limit, no_stream=no_stream)
+        return config
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(_fetch, c): c for c in CAULDRON_CONFIGS}
+        for fut in as_completed(futures):
+            config = futures[fut]
+            try:
+                fut.result()
+            except Exception:
+                logger.exception("Failed to prefetch cauldron/%s", config)
+                raise
+
+
 def cauldron_samples(
     *,
     limit: int | None = None,
@@ -423,12 +442,21 @@ def load_all_samples(
     limit: int | None = None,
     limit_all: bool = False,
     student_max_length: int = cfg["max_length"],
+    no_stream: bool = False,
 ) -> Iterator[NormalizedSample]:
+    resolved_limit = limit if not limit_all else None
+
+    logger.info("Prefetching raw data in parallel")
+    _prefetch_cauldron_raw(limit=resolved_limit, no_stream=no_stream)
+
+    if no_stream:
+        load_raw_wikipedia(limit=resolved_limit, no_stream=True)
+
     yield from wikipedia_samples(
-        limit=limit if not limit_all else None,
+        limit=resolved_limit,
         student_max_length=student_max_length,
     )
     yield from cauldron_samples(
-        limit=limit if not limit_all else None,
+        limit=resolved_limit,
         student_max_length=student_max_length,
     )
