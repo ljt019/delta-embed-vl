@@ -2,7 +2,7 @@ name = "delta-embed-vl"
 id = "ljt019/delta-embed-vl" 
 student_id = "Qwen/Qwen3.5-0.8B-Base" 
 max_length = 8192 
-attention = "sdpa"
+attention = "fa"
 
 [train]
 max_steps = 10 
