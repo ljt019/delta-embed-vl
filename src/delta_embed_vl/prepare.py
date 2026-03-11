@@ -8,7 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 def prepare_data(
-    *, limit: int | None = None, push_to_hub: bool = False, no_stream: bool = False
+    *,
+    limit: int | None = None,
+    push_to_hub: bool = False,
+    no_stream: bool = False,
+    rebuild_normalized: bool = False,
+    detailed_timings: bool = False,
 ) -> None:
     build_dataset(
         limit=limit,
@@ -18,6 +23,8 @@ def prepare_data(
         attention=resolve_attention(cfg["attention"]),
         push_to_hub=push_to_hub,
         no_stream=no_stream,
+        rebuild_normalized=rebuild_normalized,
+        detailed_timings=detailed_timings,
     )
 
 
@@ -41,11 +48,27 @@ def prepare_data_cli() -> None:
         default=False,
         help="Download full datasets then select, instead of streaming rows",
     )
+    parser.add_argument(
+        "--rebuild-normalized",
+        action="store_true",
+        default=False,
+        help="Ignore the normalized cache and rebuild it before embedding",
+    )
+    parser.add_argument(
+        "--detailed-timings",
+        action="store_true",
+        default=False,
+        help="Print detailed timing logs for normalization and teacher embedding",
+    )
     args = parser.parse_args()
 
     configure_logging()
     prepare_data(
-        limit=args.limit, push_to_hub=args.push_to_hub, no_stream=args.no_stream
+        limit=args.limit,
+        push_to_hub=args.push_to_hub,
+        no_stream=args.no_stream,
+        rebuild_normalized=args.rebuild_normalized,
+        detailed_timings=args.detailed_timings,
     )
 
 

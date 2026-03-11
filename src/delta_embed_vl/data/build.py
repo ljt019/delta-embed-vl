@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,37 @@ class NormalizationTask:
     num_shards: int = 1
 
 
+def _rows_per_second(rows: int, elapsed_s: float) -> float:
+    if elapsed_s <= 0:
+        return 0.0
+    return rows / elapsed_s
+
+
+def _format_timing_value(value: object) -> str:
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _log_detailed_timing(
+    enabled: bool,
+    *,
+    stage: str,
+    elapsed_s: float,
+    **fields: object,
+) -> None:
+    if not enabled:
+        return
+    parts = [f"TIMING stage={stage}", f"elapsed_s={elapsed_s:.3f}"]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={_format_timing_value(value)}")
+    logger.info(" ".join(parts))
+
+
 def load_training_dataset() -> Dataset:
     """Load the canonical dataset from disk, or auto-pull from Hub if missing."""
     if _is_saved_dataset(_DATASET_DIR):
@@ -87,15 +119,20 @@ def build_dataset(
     attention: str | None = None,
     push_to_hub: bool = False,
     no_stream: bool = False,
+    rebuild_normalized: bool = False,
+    detailed_timings: bool = False,
 ) -> None:
     if teacher_batch_size < 1:
         raise ValueError("teacher_batch_size must be at least 1.")
+    build_started = time.perf_counter()
 
     normalized_ds = _load_or_build_normalized(
         limit=limit,
         limit_all=limit_all,
         max_length=max_length,
         no_stream=no_stream,
+        rebuild_normalized=rebuild_normalized,
+        detailed_timings=detailed_timings,
     )
 
     logger.info("Embedding normalized samples with teacher")
@@ -103,10 +140,19 @@ def build_dataset(
         normalized_ds=normalized_ds,
         teacher_batch_size=teacher_batch_size,
         attention=attention,
+        detailed_timings=detailed_timings,
     )
+    save_started = time.perf_counter()
     try:
         _save_dataset(dataset, _DATASET_DIR)
         logger.info("Dataset saved: rows=%d path=%s", len(dataset), _DATASET_DIR)
+        _log_detailed_timing(
+            detailed_timings,
+            stage="dataset_save",
+            elapsed_s=time.perf_counter() - save_started,
+            rows=len(dataset),
+            path=_DATASET_DIR,
+        )
     finally:
         for d in temp_dirs:
             shutil.rmtree(d, ignore_errors=True)
@@ -114,7 +160,28 @@ def build_dataset(
     if push_to_hub:
         hub_id = cfg["data"]["id"]
         logger.info("Pushing dataset to Hub: %s", hub_id)
+        push_started = time.perf_counter()
         dataset.push_to_hub(hub_id, split="train")
+        _log_detailed_timing(
+            detailed_timings,
+            stage="dataset_push",
+            elapsed_s=time.perf_counter() - push_started,
+            rows=len(dataset),
+            hub_id=hub_id,
+        )
+
+    total_elapsed = time.perf_counter() - build_started
+    _log_detailed_timing(
+        detailed_timings,
+        stage="prepare_total",
+        elapsed_s=total_elapsed,
+        rows=len(dataset),
+        rows_per_s=_rows_per_second(len(dataset), total_elapsed),
+        limit="all" if limit is None else limit,
+        no_stream=no_stream,
+        rebuild_normalized=rebuild_normalized,
+        push_to_hub=push_to_hub,
+    )
 
 
 _NORMALIZED_META = _NORMALIZED_DIR / "_meta.json"
@@ -146,12 +213,25 @@ def _load_or_build_normalized(
     limit_all: bool,
     max_length: int,
     no_stream: bool = False,
+    rebuild_normalized: bool = False,
+    detailed_timings: bool = False,
 ) -> Dataset:
-    if _normalized_cache_valid(limit, limit_all):
+    total_started = time.perf_counter()
+    if rebuild_normalized:
+        if _is_saved_dataset(_NORMALIZED_DIR):
+            logger.info("Rebuilding normalized cache by request")
+    elif _normalized_cache_valid(limit, limit_all):
+        dataset = Dataset.load_from_disk(str(_NORMALIZED_DIR))
         logger.info("Normalized cache hit: %s", _NORMALIZED_DIR)
-        return Dataset.load_from_disk(str(_NORMALIZED_DIR))
-
-    if _is_saved_dataset(_NORMALIZED_DIR):
+        _log_detailed_timing(
+            detailed_timings,
+            stage="normalize_cache_hit",
+            elapsed_s=time.perf_counter() - total_started,
+            rows=len(dataset),
+            path=_NORMALIZED_DIR,
+        )
+        return dataset
+    elif _is_saved_dataset(_NORMALIZED_DIR):
         logger.info("Normalized cache stale, rebuilding")
 
     resolved_limit = None if limit_all else limit
@@ -164,7 +244,16 @@ def _load_or_build_normalized(
         available_cpus,
         len(tasks),
     )
+    prime_started = time.perf_counter()
     _prime_sharded_raw_caches(tasks, limit=resolved_limit, no_stream=no_stream)
+    sharded_sources = len({task.source for task in tasks if task.num_shards > 1})
+    _log_detailed_timing(
+        detailed_timings,
+        stage="normalize_prime_raw",
+        elapsed_s=time.perf_counter() - prime_started,
+        sharded_sources=sharded_sources,
+        tasks=len(tasks),
+    )
 
     temp_root = _NORMALIZED_DIR.with_name("normalized.build")
     if temp_root.exists():
@@ -172,7 +261,8 @@ def _load_or_build_normalized(
     temp_root.mkdir(parents=True, exist_ok=True)
 
     try:
-        task_results: dict[int, tuple[str, int]] = {}
+        generate_started = time.perf_counter()
+        task_results: dict[int, tuple[str, int, float]] = {}
         if cpu_workers == 1:
             for idx, task in enumerate(tasks):
                 task_results[idx] = _normalize_task_to_arrow(
@@ -182,10 +272,17 @@ def _load_or_build_normalized(
                     no_stream=no_stream,
                     temp_root=str(temp_root),
                 )
+                _, rows, elapsed_s = task_results[idx]
                 logger.info(
-                    "Normalized %s: rows=%d (%d/%d)",
+                    "Normalized %s: rows=%d%s (%d/%d)",
                     _normalization_task_label(task),
-                    task_results[idx][1],
+                    rows,
+                    (
+                        f" elapsed_s={elapsed_s:.3f} "
+                        f"rows_per_s={_rows_per_second(rows, elapsed_s):.1f}"
+                        if detailed_timings
+                        else ""
+                    ),
                     idx + 1,
                     len(tasks),
                 )
@@ -205,21 +302,39 @@ def _load_or_build_normalized(
                 for completed, future in enumerate(as_completed(futures), start=1):
                     idx = futures[future]
                     task_results[idx] = future.result()
+                    _, rows, elapsed_s = task_results[idx]
                     logger.info(
-                        "Normalized %s: rows=%d (%d/%d)",
+                        "Normalized %s: rows=%d%s (%d/%d)",
                         _normalization_task_label(tasks[idx]),
-                        task_results[idx][1],
+                        rows,
+                        (
+                            f" elapsed_s={elapsed_s:.3f} "
+                            f"rows_per_s={_rows_per_second(rows, elapsed_s):.1f}"
+                            if detailed_timings
+                            else ""
+                        ),
                         completed,
                         len(tasks),
                     )
 
         ordered_results = [task_results[i] for i in range(len(tasks))]
-        rows_written = sum(rows for _, rows in ordered_results)
+        rows_written = sum(rows for _, rows, _ in ordered_results)
         logger.info("Normalized %d samples", rows_written)
+        generate_elapsed = time.perf_counter() - generate_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="normalize_generate",
+            elapsed_s=generate_elapsed,
+            rows=rows_written,
+            rows_per_s=_rows_per_second(rows_written, generate_elapsed),
+            tasks=len(tasks),
+            workers=cpu_workers,
+        )
 
+        merge_started = time.perf_counter()
         shard_datasets = [
             Dataset.from_file(str(Path(temp_dir) / "data.arrow"))
-            for temp_dir, rows in ordered_results
+            for temp_dir, rows, _ in ordered_results
             if rows > 0
         ]
         if not shard_datasets:
@@ -231,9 +346,35 @@ def _load_or_build_normalized(
             dataset = shard_datasets[0]
         else:
             dataset = concatenate_datasets(shard_datasets)
+        merge_elapsed = time.perf_counter() - merge_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="normalize_merge",
+            elapsed_s=merge_elapsed,
+            rows=rows_written,
+            shards=len(shard_datasets),
+        )
 
+        save_started = time.perf_counter()
         _save_dataset(dataset, _NORMALIZED_DIR)
         _write_normalized_meta(limit, limit_all)
+        save_elapsed = time.perf_counter() - save_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="normalize_save",
+            elapsed_s=save_elapsed,
+            rows=rows_written,
+            path=_NORMALIZED_DIR,
+        )
+        total_elapsed = time.perf_counter() - total_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="normalize_total",
+            elapsed_s=total_elapsed,
+            rows=rows_written,
+            rows_per_s=_rows_per_second(rows_written, total_elapsed),
+            limit="all" if limit_all else limit,
+        )
         return dataset
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
@@ -348,7 +489,8 @@ def _normalize_task_to_arrow(
     max_length: int,
     no_stream: bool,
     temp_root: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, float]:
+    task_started = time.perf_counter()
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     source_slug = task.source.replace("/", "-")
@@ -391,7 +533,7 @@ def _normalize_task_to_arrow(
         rows_written += len(buffer)
 
     writer.finalize()
-    return str(temp_dir), rows_written
+    return str(temp_dir), rows_written, time.perf_counter() - task_started
 
 
 def _flush_buffer(buffer: list[dict[str, object]]) -> dict[str, list[object]]:
@@ -416,8 +558,9 @@ def _embed_shard(
     indices: list[int],
     batch_size: int,
     shard_id: int,
-) -> tuple[Path, int, float]:
-    """Embed a contiguous shard on one device, return (arrow_dir, rows, peak_gpu_pct)."""
+) -> tuple[Path, int, float, float]:
+    """Embed a contiguous shard on one device, return (arrow_dir, rows, peak_gpu_pct, elapsed_s)."""
+    shard_started = time.perf_counter()
     temp_dir = _DATASET_DIR.with_name(f"dataset.embed-shard-{shard_id}")
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
@@ -462,7 +605,7 @@ def _embed_shard(
         rows_written += len(chunk)
 
     writer.finalize()
-    return temp_dir, rows_written, peak_pct
+    return temp_dir, rows_written, peak_pct, time.perf_counter() - shard_started
 
 
 def _embed_normalized(
@@ -470,7 +613,9 @@ def _embed_normalized(
     normalized_ds: Dataset,
     teacher_batch_size: int,
     attention: str | None,
+    detailed_timings: bool = False,
 ) -> tuple[Dataset, list[Path]]:
+    embed_started = time.perf_counter()
     devices = _detect_devices()
     n = len(normalized_ds)
 
@@ -488,18 +633,27 @@ def _embed_normalized(
         len(devices),
         ", ".join(devices),
     )
+    teacher_load_started = time.perf_counter()
     teachers = [load_teacher(device=d, attn_implementation=attention) for d in devices]
+    teacher_load_elapsed = time.perf_counter() - teacher_load_started
+    _log_detailed_timing(
+        detailed_timings,
+        stage="embed_teacher_load",
+        elapsed_s=teacher_load_elapsed,
+        devices=len(devices),
+    )
 
     num_shards = len(devices)
     shard_indices = [list(range(i, n, num_shards)) for i in range(num_shards)]
 
     temp_dirs: list[Path] = []
+    compute_started = time.perf_counter()
     if num_shards == 1:
-        temp_dir, rows, peak = _embed_shard(
+        temp_dir, rows, peak, elapsed_s = _embed_shard(
             teachers[0], normalized_ds, shard_indices[0], teacher_batch_size, 0
         )
         temp_dirs.append(temp_dir)
-        shard_results = [(temp_dir, rows, peak)]
+        shard_results = [(temp_dir, rows, peak, elapsed_s)]
     else:
         with ThreadPoolExecutor(max_workers=num_shards) as pool:
             futures = {
@@ -513,13 +667,14 @@ def _embed_normalized(
                 ): i
                 for i in range(num_shards)
             }
-            shard_results_unordered: dict[int, tuple[Path, int, float]] = {}
+            shard_results_unordered: dict[int, tuple[Path, int, float, float]] = {}
             for fut in as_completed(futures):
                 idx = futures[fut]
                 shard_results_unordered[idx] = fut.result()
             shard_results = [shard_results_unordered[i] for i in range(num_shards)]
 
         temp_dirs = [r[0] for r in shard_results]
+    compute_elapsed = time.perf_counter() - compute_started
 
     total_rows = sum(r[1] for r in shard_results)
     gpu_available = devices[0].startswith("cuda")
@@ -535,13 +690,70 @@ def _embed_normalized(
             logger.info("GPU utilization peaked at %.0f%%", peak_pct)
 
     logger.info("Embedded %d rows across %d device(s)", total_rows, num_shards)
+    for shard_id, (temp_dir, rows, peak_pct, elapsed_s) in enumerate(shard_results):
+        _log_detailed_timing(
+            detailed_timings,
+            stage="embed_shard",
+            elapsed_s=elapsed_s,
+            shard=shard_id,
+            device=devices[shard_id],
+            rows=rows,
+            rows_per_s=_rows_per_second(rows, elapsed_s),
+            peak_gpu_pct=peak_pct if gpu_available else None,
+        )
+    _log_detailed_timing(
+        detailed_timings,
+        stage="embed_compute",
+        elapsed_s=compute_elapsed,
+        rows=total_rows,
+        rows_per_s=_rows_per_second(total_rows, compute_elapsed),
+        devices=num_shards,
+        batch_size=teacher_batch_size,
+    )
 
+    merge_started = time.perf_counter()
     if num_shards == 1:
         arrow_path = temp_dirs[0] / "data.arrow"
-        return Dataset.from_file(str(arrow_path)), temp_dirs
+        dataset = Dataset.from_file(str(arrow_path))
+        merge_elapsed = time.perf_counter() - merge_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="embed_merge",
+            elapsed_s=merge_elapsed,
+            rows=total_rows,
+            shards=1,
+        )
+        total_elapsed = time.perf_counter() - embed_started
+        _log_detailed_timing(
+            detailed_timings,
+            stage="embed_total",
+            elapsed_s=total_elapsed,
+            rows=total_rows,
+            rows_per_s=_rows_per_second(total_rows, total_elapsed),
+            devices=num_shards,
+        )
+        return dataset, temp_dirs
 
     shard_datasets = [Dataset.from_file(str(d / "data.arrow")) for d in temp_dirs]
-    return concatenate_datasets(shard_datasets), temp_dirs
+    dataset = concatenate_datasets(shard_datasets)
+    merge_elapsed = time.perf_counter() - merge_started
+    _log_detailed_timing(
+        detailed_timings,
+        stage="embed_merge",
+        elapsed_s=merge_elapsed,
+        rows=total_rows,
+        shards=len(shard_datasets),
+    )
+    total_elapsed = time.perf_counter() - embed_started
+    _log_detailed_timing(
+        detailed_timings,
+        stage="embed_total",
+        elapsed_s=total_elapsed,
+        rows=total_rows,
+        rows_per_s=_rows_per_second(total_rows, total_elapsed),
+        devices=num_shards,
+    )
+    return dataset, temp_dirs
 
 
 def _is_saved_dataset(path: Path) -> bool:
