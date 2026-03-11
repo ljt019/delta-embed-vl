@@ -5,8 +5,6 @@ from typing import Any, cast
 
 from datasets import Dataset, Image, Sequence, concatenate_datasets, load_dataset
 
-from delta_embed_vl.settings import Settings
-
 ### Public
 
 WIKIPEDIA_ID = "wikimedia/wikipedia"
@@ -54,13 +52,6 @@ CAULDRON_CONFIGS = [
 ]
 
 
-def download_data(*, limit: int | None = None) -> None:
-    """Download all raw datasets. Pass limit=N to only fetch first N rows per dataset."""
-    load_raw_wikipedia(limit=limit)
-    for config in CAULDRON_CONFIGS:
-        load_raw_cauldron(config, limit=limit)
-
-
 def load_raw_wikipedia(*, limit: int | None = None) -> Dataset:
     return _load_raw_data("wikipedia", limit=limit)
 
@@ -77,7 +68,7 @@ def load_raw_cauldron(config: str, *, limit: int | None = None) -> Dataset:
 
 ### Private
 
-_RAW_DATA_DIR = Settings().data_dir / "raw"
+_RAW_DATA_DIR = Path("data/raw")
 _CACHE_META_FILENAME = "_cache_meta.json"
 
 _DATASET_REGISTRY = {

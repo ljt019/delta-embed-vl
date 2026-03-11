@@ -9,16 +9,15 @@ import torch.nn as nn
 from transformers import AutoProcessor, Qwen3VLModel, Qwen3VLProcessor
 from transformers.utils import is_flash_attn_2_available
 
+from delta_embed_vl import cfg
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.tokenization import (
     EmbeddingInput,
     build_teacher_batch,
     get_processor_tokenizer,
 )
-from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-_SETTINGS = Settings()
 
 
 @dataclass
@@ -52,7 +51,7 @@ def _get_teacher_hidden_size(model: Qwen3VLModel) -> int:
 
 
 def load_teacher(
-    model_id: str = _SETTINGS.teacher_model,
+    model_id: str = cfg["data"]["model_id"],
     *,
     device: str = "cuda:0",
     dtype: torch.dtype = torch.bfloat16,

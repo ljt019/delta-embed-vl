@@ -1,7 +1,6 @@
-import argparse
 import json
 import logging
-import math
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -14,7 +13,7 @@ from datasets import Dataset
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 
-from delta_embed_vl import configure_logging, resolve_attention, set_seed
+from delta_embed_vl import cfg, configure_logging, resolve_attention, set_seed
 from delta_embed_vl.data.build import decode_image, load_training_dataset
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import load_student, save_projection_head
@@ -24,20 +23,16 @@ from delta_embed_vl.model.tokenization import (
     build_student_batch,
     is_student_overlength_error,
 )
-from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
 _PROGRESS_LOG_INTERVAL_S = 30.0
-_WANDB_LOG_EVERY_N_STEPS = 20
-_SETTINGS = Settings()
+_WANDB_LOG_EVERY_N_STEPS = cfg["wandb"]["interval"]
 _PRE_FORWARD_LOG = Path("last_student_forward.jsonl")
 
 
-def _auto_student_device() -> str:
+def _auto_device() -> str:
     if not torch.cuda.is_available():
         return "cpu"
-    if torch.cuda.device_count() > 1:
-        return "cuda:1"
     return "cuda:0"
 
 
@@ -75,8 +70,8 @@ def _collate_rows(
         if not is_student_overlength_error(exc):
             raise
         raise ValueError(
-            "Prepared dataset contains samples that exceed the current --max-length. "
-            "Rebuild the dataset with `prepare-data --max-length` set to this value."
+            "Prepared dataset contains samples that exceed max_length in config.toml. "
+            "Update max_length and rebuild with `uv run prepare`."
         ) from exc
 
     teacher_arrays = np.asarray(
@@ -103,8 +98,8 @@ def _raise_if_nonfinite(
     tensor: torch.Tensor,
     *,
     name: str,
-    batch_ordinal: int,
-    batches_per_epoch: int,
+    step: int,
+    max_steps: int,
     origins: list[str],
 ) -> None:
     detached = tensor.detach()
@@ -114,7 +109,7 @@ def _raise_if_nonfinite(
 
     nonfinite_count = detached.numel() - int(finite_mask.sum().item())
     message = (
-        f"{name} became non-finite in training batch {batch_ordinal}/{batches_per_epoch}; "
+        f"{name} became non-finite at step {step}/{max_steps}; "
         f"shape={tuple(detached.shape)} dtype={detached.dtype} device={detached.device} "
         f"nonfinite={nonfinite_count}/{detached.numel()}"
     )
@@ -131,15 +126,13 @@ def _raise_if_nonfinite(
 
 def _log_pre_forward(
     *,
-    epoch: int,
-    batch_ordinal: int,
-    batches_per_epoch: int,
+    step: int,
+    max_steps: int,
     origins: list[str],
     model_inputs: dict[str, torch.Tensor],
 ) -> None:
     record = {
-        "epoch": epoch,
-        "batch": f"{batch_ordinal}/{batches_per_epoch}",
+        "step": f"{step}/{max_steps}",
         "origins": origins,
         "shapes": {key: list(value.shape) for key, value in model_inputs.items()},
     }
@@ -148,6 +141,30 @@ def _log_pre_forward(
         file.write("\n")
         file.flush()
         sys.stdout.flush()
+
+
+def _save_checkpoint(
+    *,
+    model,
+    projection_head,
+    processor,
+    save_dir: Path,
+    step: int,
+    keep: int,
+) -> None:
+    ckpt_path = save_dir / f"step-{step}"
+    ckpt_path.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(str(ckpt_path))
+    save_projection_head(projection_head, ckpt_path)
+    processor.save_pretrained(str(ckpt_path))
+    logger.info("Saved checkpoint: %s", ckpt_path)
+
+    if keep > 0:
+        existing = sorted(save_dir.glob("step-*"), key=lambda p: p.stat().st_mtime)
+        while len(existing) > keep:
+            old = existing.pop(0)
+            shutil.rmtree(old, ignore_errors=True)
+            logger.info("Removed old checkpoint: %s", old.name)
 
 
 def cosine_distill_loss(
@@ -159,44 +176,28 @@ def cosine_distill_loss(
     return (1.0 - (student_norm * teacher_norm).sum(dim=-1)).mean()
 
 
-def train_model(
-    *,
-    epochs: int = 3,
-    batch_size: int = 32,
-    lr: float = 2e-5,
-    warmup_ratio: float = 0.1,
-    max_length: int = _SETTINGS.student_max_length,
-    grad_accum_steps: int = 1,
-    save_dir: str = "checkpoints",
-    student_device: str | None = None,
-    attention: str | None = None,
-) -> None:
-    if grad_accum_steps < 1:
-        raise ValueError("grad_accum_steps must be at least 1.")
+def train_model(*, push_to_hub: bool = False) -> None:
+    max_steps = cfg["train"]["max_steps"]
+    batch_size = cfg["train"]["batch_size"]
+    max_length = cfg["max_length"]
+    attention = resolve_attention(cfg["attention"])
+    save_dir = "checkpoints"
 
-    resolved_student_device = student_device or _auto_student_device()
+    resolved_student_device = _auto_device()
     logger.info("Student device: %s", resolved_student_device)
 
     dataset = load_training_dataset()
     n = len(dataset)
     if n == 0:
         raise ValueError("No training samples found.")
-    logger.info("Training on %d samples for %d epochs", n, epochs)
+    logger.info("Training on %d samples for %d steps", n, max_steps)
 
     wandb_run = None
-    if _SETTINGS.wandb_project is not None:
+    if cfg["wandb"]["project"] is not None:
         wandb_run = wandb.init(
-            project=_SETTINGS.wandb_project,
-            config={
-                "epochs": epochs,
-                "batch_size": batch_size,
-                "lr": lr,
-                "max_length": max_length,
-                "student_model": _SETTINGS.student_model,
-                "teacher_model": _SETTINGS.teacher_model,
-                "hub_dataset": _SETTINGS.hub_dataset,
-                "grad_accum_steps": grad_accum_steps,
-            },
+            project=cfg["wandb"]["project"],
+            name=cfg["wandb"]["name"],
+            config=cfg,
         )
 
     try:
@@ -209,11 +210,10 @@ def train_model(
         model.train()
         projection_head.train()
 
-        indices = np.arange(n, dtype=np.int64)
-        batches_per_epoch = math.ceil(n / batch_size)
-        total_steps = math.ceil((batches_per_epoch * epochs) / grad_accum_steps)
-        warmup_steps = int(total_steps * warmup_ratio)
-
+        lr = cfg["train"]["lr"]
+        warmup_ratio = cfg["train"]["warmup_ratio"]
+        grad_accum_steps = cfg["train"]["grad_accum_steps"]
+        warmup_steps = int(max_steps * warmup_ratio)
         optimizer = AdamW(
             list(model.parameters()) + list(projection_head.parameters()),
             lr=lr,
@@ -221,225 +221,210 @@ def train_model(
         scheduler = get_cosine_schedule_with_warmup(
             optimizer,
             num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
+            num_training_steps=max_steps,
         )
 
+        indices = np.arange(n, dtype=np.int64)
+        cursor = n  # force shuffle on first iteration
         global_step = 0
+        micro_step = 0
+        running_loss = 0.0
+        train_start_s = time.monotonic()
+        last_progress_log_s = train_start_s
         optimizer.zero_grad(set_to_none=True)
-        total_skipped_overlength_samples = 0
-        total_skipped_overlength_batches = 0
-        for epoch in range(epochs):
-            np.random.shuffle(indices)
-            epoch_loss = 0.0
-            num_batches = 0
-            epoch_start_s = time.monotonic()
-            last_progress_log_s = epoch_start_s
-            skipped_overlength_samples = 0
-            skipped_overlength_batches = 0
 
-            for batch_start in range(0, n, batch_size):
-                batch_start_s = time.monotonic()
-                batch_end = min(batch_start + batch_size, n)
-                batch_ordinal = (batch_start // batch_size) + 1
-                batch_indices = indices[batch_start:batch_end]
+        while global_step < max_steps:
+            if cursor >= n:
+                np.random.shuffle(indices)
+                cursor = 0
 
-                batch_rows = [
-                    dataset[int(global_index)] for global_index in batch_indices
-                ]
-                batch_origins, batch_data, teacher_target = _collate_rows(
-                    batch_rows,
-                    processor=processor,
-                    max_length=max_length,
-                )
-                teacher_target = teacher_target.to(
-                    device=resolved_student_device,
-                    non_blocking=True,
-                )
-                _raise_if_nonfinite(
-                    teacher_target,
-                    name="teacher_target",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
+            batch_start_s = time.monotonic()
+            batch_end = min(cursor + batch_size, n)
+            batch_indices = indices[cursor:batch_end]
+            cursor = batch_end
 
-                model_inputs = {
-                    key: value.to(resolved_student_device)
-                    for key, value in batch_data.items()
-                }
-                _log_pre_forward(
-                    epoch=epoch,
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                    model_inputs=model_inputs,
-                )
+            batch_rows = [dataset[int(idx)] for idx in batch_indices]
+            batch_origins, batch_data, teacher_target = _collate_rows(
+                batch_rows,
+                processor=processor,
+                max_length=max_length,
+            )
+            teacher_target = teacher_target.to(
+                device=resolved_student_device,
+                non_blocking=True,
+            )
+            _raise_if_nonfinite(
+                teacher_target,
+                name="teacher_target",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
 
-                outputs = model(**model_inputs)
-                _raise_if_nonfinite(
-                    outputs.last_hidden_state,
-                    name="student_last_hidden_state",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
-                pooled = last_token_pool(
-                    outputs.last_hidden_state,
-                    model_inputs["attention_mask"],
-                )
-                _raise_if_nonfinite(
-                    pooled,
-                    name="student_pooled",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
-                projected = projection_head(pooled).float()
-                _raise_if_nonfinite(
-                    projected,
-                    name="student_projected",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
-                student_emb = normalize(projected)
-                _raise_if_nonfinite(
-                    student_emb,
-                    name="student_embedding",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
+            model_inputs = {
+                key: value.to(resolved_student_device)
+                for key, value in batch_data.items()
+            }
+            _log_pre_forward(
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+                model_inputs=model_inputs,
+            )
 
-                loss = (
-                    cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
-                )
-                _raise_if_nonfinite(
-                    loss.reshape(1),
-                    name="distill_loss",
-                    batch_ordinal=batch_ordinal,
-                    batches_per_epoch=batches_per_epoch,
-                    origins=batch_origins,
-                )
-                loss.backward()
+            outputs = model(**model_inputs)
+            _raise_if_nonfinite(
+                outputs.last_hidden_state,
+                name="student_last_hidden_state",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
+            pooled = last_token_pool(
+                outputs.last_hidden_state,
+                model_inputs["attention_mask"],
+            )
+            _raise_if_nonfinite(
+                pooled,
+                name="student_pooled",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
+            projected = projection_head(pooled).float()
+            _raise_if_nonfinite(
+                projected,
+                name="student_projected",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
+            student_emb = normalize(projected)
+            _raise_if_nonfinite(
+                student_emb,
+                name="student_embedding",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
 
-                num_batches += 1
-                should_step = (num_batches % grad_accum_steps == 0) or (batch_end == n)
-                if should_step:
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    global_step += 1
+            loss = cosine_distill_loss(student_emb, teacher_target) / grad_accum_steps
+            _raise_if_nonfinite(
+                loss.reshape(1),
+                name="distill_loss",
+                step=global_step,
+                max_steps=max_steps,
+                origins=batch_origins,
+            )
+            loss.backward()
 
-                epoch_loss += loss.item() * grad_accum_steps
+            micro_step += 1
+            raw_loss = loss.item() * grad_accum_steps
+            running_loss += raw_loss
+
+            should_step = micro_step % grad_accum_steps == 0
+            if should_step:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+
                 now_s = time.monotonic()
                 batch_elapsed_s = now_s - batch_start_s
 
                 if (
                     wandb_run is not None
-                    and should_step
                     and global_step % _WANDB_LOG_EVERY_N_STEPS == 0
                 ):
                     wandb.log(
                         {
-                            "train/loss": loss.item() * grad_accum_steps,
+                            "train/loss": raw_loss,
                             "train/lr": scheduler.get_last_lr()[0],
                             "train/batch_time_s": batch_elapsed_s,
                         },
                         step=global_step,
                     )
 
+                ckpt_interval = cfg["ckpt"]["interval"]
+                if ckpt_interval > 0 and global_step % ckpt_interval == 0:
+                    _save_checkpoint(
+                        model=model,
+                        projection_head=projection_head,
+                        processor=processor,
+                        save_dir=Path(save_dir),
+                        step=global_step,
+                        keep=cfg["ckpt"]["keep"],
+                    )
+
                 if (
-                    num_batches == 1
+                    global_step == 1
                     or (now_s - last_progress_log_s) >= _PROGRESS_LOG_INTERVAL_S
+                    or global_step == max_steps
                 ):
-                    elapsed_s = now_s - epoch_start_s
-                    avg_batch_s = elapsed_s / max(num_batches, 1)
-                    remaining_batches = max(batches_per_epoch - num_batches, 0)
-                    eta_s = avg_batch_s * remaining_batches
+                    elapsed_s = now_s - train_start_s
+                    avg_step_s = elapsed_s / global_step
+                    eta_s = avg_step_s * (max_steps - global_step)
+                    avg_loss = running_loss / global_step
                     logger.info(
-                        "Epoch %d/%d  %d/%d batches (%.1f%%)  loss=%.6f avg=%.6f  batch=%.2fs  elapsed=%s  eta=%s",
-                        epoch + 1,
-                        epochs,
-                        num_batches,
-                        batches_per_epoch,
-                        (100.0 * num_batches) / max(batches_per_epoch, 1),
-                        loss.item() * grad_accum_steps,
-                        epoch_loss / max(num_batches, 1),
+                        "Step %d/%d (%.1f%%)  loss=%.6f avg=%.6f  step=%.2fs  elapsed=%s  eta=%s",
+                        global_step,
+                        max_steps,
+                        (100.0 * global_step) / max_steps,
+                        raw_loss,
+                        avg_loss,
                         batch_elapsed_s,
                         _format_duration(elapsed_s),
                         _format_duration(eta_s),
                     )
                     last_progress_log_s = now_s
 
-            avg_loss = epoch_loss / max(num_batches, 1)
-            if wandb_run is not None:
-                wandb.log(
-                    {
-                        "epoch/avg_loss": avg_loss,
-                        "epoch/skipped_samples": skipped_overlength_samples,
-                    },
-                    step=global_step,
-                )
-            logger.info(
-                "Epoch %d/%d  loss=%.6f  lr=%.2e  steps=%d  skipped_overlength_samples=%d  skipped_overlength_batches=%d",
-                epoch + 1,
-                epochs,
-                avg_loss,
-                scheduler.get_last_lr()[0],
-                global_step,
-                skipped_overlength_samples,
-                skipped_overlength_batches,
-            )
-
-        out_path = Path(save_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(str(out_path))
-        save_projection_head(projection_head, out_path)
-        processor.save_pretrained(str(out_path))
+        final_path = Path(save_dir) / cfg["name"]
+        final_path.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(final_path))
+        save_projection_head(projection_head, final_path)
+        processor.save_pretrained(str(final_path))
         logger.info(
-            "Training done: skipped_overlength_samples=%d skipped_overlength_batches=%d",
-            total_skipped_overlength_samples,
-            total_skipped_overlength_batches,
+            "Training done: %d steps, avg_loss=%.6f",
+            global_step,
+            running_loss / max(global_step, 1),
         )
-        logger.info("Saved checkpoint to %s", out_path)
+        logger.info("Saved final model to %s", final_path)
+
+        if push_to_hub:
+            hub_id = cfg["id"]
+            logger.info("Pushing model to Hub: %s", hub_id)
+            model.push_to_hub(hub_id)
+            projection_head_path = final_path / "projection_head.pt"
+            if projection_head_path.exists():
+                from huggingface_hub import upload_file
+
+                upload_file(
+                    path_or_fileobj=str(projection_head_path),
+                    path_in_repo="projection_head.pt",
+                    repo_id=hub_id,
+                )
+            processor.push_to_hub(hub_id)
+            logger.info("Pushed model to Hub: %s", hub_id)
     finally:
         if wandb_run is not None:
             wandb.finish()
 
 
 def train_model_cli() -> None:
+    import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--warmup-ratio", type=float, default=0.1)
-    parser.add_argument("--max-length", type=int, default=_SETTINGS.student_max_length)
-    parser.add_argument("--grad-accum-steps", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=_SETTINGS.seed)
-    parser.add_argument("--save-dir", type=str, default="checkpoints")
     parser.add_argument(
-        "--attention",
-        choices=("sdpa", "fa"),
-        default=None,
-        help="Force attention backend for teacher and student.",
+        "--push-to-hub",
+        action="store_true",
+        default=False,
+        help=f"Push trained model to Hub as {cfg['id']}",
     )
-    parser.add_argument("--student-device", type=str, default=None)
     args = parser.parse_args()
 
     configure_logging()
-    set_seed(args.seed)
-    train_model(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        warmup_ratio=args.warmup_ratio,
-        max_length=args.max_length,
-        grad_accum_steps=args.grad_accum_steps,
-        save_dir=args.save_dir,
-        student_device=args.student_device,
-        attention=resolve_attention(args.attention),
-    )
+    set_seed(cfg["train"]["seed"])
+    train_model(push_to_hub=args.push_to_hub)
 
 
 if __name__ == "__main__":

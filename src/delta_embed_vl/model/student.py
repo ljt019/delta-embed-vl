@@ -10,16 +10,16 @@ import torch.nn as nn
 from transformers import AutoProcessor, Qwen3_5Model, Qwen3VLProcessor
 from transformers.utils import is_flash_attn_2_available
 
+from delta_embed_vl import cfg
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.tokenization import (
     EmbeddingInput,
     build_student_batch,
     get_processor_tokenizer,
 )
-from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-STUDENT_MODEL_ID = Settings().student_model
+STUDENT_MODEL_ID = cfg["student_id"]
 PROJECTION_STATE_FILENAME = "projection_head.pt"
 PROJECTION_CONFIG_FILENAME = "projection_config.json"
 

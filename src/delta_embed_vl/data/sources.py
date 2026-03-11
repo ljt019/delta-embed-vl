@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 from PIL import Image
 
+from delta_embed_vl import cfg
 from delta_embed_vl.data.download import (
     CAULDRON_CONFIGS,
     load_raw_cauldron,
@@ -21,10 +22,8 @@ from delta_embed_vl.model.tokenization import (
     get_student_processor,
     student_batch_fit_flags,
 )
-from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-_SETTINGS = Settings()
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _IMAGE_TOKEN = re.compile(r"<image>\s*")
 _MIN_CHUNK_CHARS = 100
@@ -115,7 +114,7 @@ def _resolve_cached_image_path(normalized_path: str) -> str | None:
         if suffix in seen:
             continue
         seen.add(suffix)
-        resolved = next((_SETTINGS.data_dir / "raw").glob(f"**/{suffix}"), None)
+        resolved = next((Path("data") / "raw").glob(f"**/{suffix}"), None)
         if resolved is not None and resolved.exists():
             return str(resolved)
 
@@ -292,7 +291,7 @@ def _yield_fitting_samples(
 def wikipedia_samples(
     *,
     limit: int | None = None,
-    student_max_length: int = _SETTINGS.student_max_length,
+    student_max_length: int = cfg["max_length"],
     max_output_samples: int | None = None,
 ) -> Iterator[NormalizedSample]:
     raw_dataset = load_raw_wikipedia(limit=limit)
@@ -340,7 +339,7 @@ def cauldron_config_samples(
     config: str,
     *,
     limit: int | None = None,
-    student_max_length: int = _SETTINGS.student_max_length,
+    student_max_length: int = cfg["max_length"],
 ) -> Iterator[NormalizedSample]:
     source = f"cauldron/{config}"
     raw_dataset = load_raw_cauldron(config, limit=limit)
@@ -409,7 +408,7 @@ def cauldron_config_samples(
 def cauldron_samples(
     *,
     limit: int | None = None,
-    student_max_length: int = _SETTINGS.student_max_length,
+    student_max_length: int = cfg["max_length"],
 ) -> Iterator[NormalizedSample]:
     for config in CAULDRON_CONFIGS:
         yield from cauldron_config_samples(
@@ -423,8 +422,8 @@ def load_all_samples(
     *,
     limit: int | None = None,
     limit_all: bool = False,
-    student_max_length: int = _SETTINGS.student_max_length,
-    wikipedia_ratio: float = _SETTINGS.wikipedia_ratio,
+    student_max_length: int = cfg["max_length"],
+    wikipedia_ratio: float = cfg["data"]["wikipedia_ratio"],
 ) -> Iterator[NormalizedSample]:
     if not limit_all:
         yield from wikipedia_samples(

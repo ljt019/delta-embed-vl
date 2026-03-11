@@ -8,9 +8,8 @@ from PIL import Image
 from transformers import AutoProcessor, PreTrainedTokenizerBase, Qwen3VLProcessor
 from transformers.feature_extraction_utils import BatchFeature
 
-from delta_embed_vl.settings import Settings
+from delta_embed_vl import cfg
 
-_SETTINGS = Settings()
 _STUDENT_MULTIMODAL_MISMATCH = "Mismatch in `image` token count"
 _STUDENT_OVERLENGTH_MESSAGE = (
     "Student batch exceeds the configured max_length after multimodal token expansion."
@@ -30,7 +29,7 @@ def get_student_processor() -> Qwen3VLProcessor:
     processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
-            _SETTINGS.student_model,
+            cfg["student_id"],
             trust_remote_code=True,
         ),
     )
@@ -205,7 +204,7 @@ def build_student_batch(
             raise
         raise ValueError(
             f"{_STUDENT_OVERLENGTH_MESSAGE} "
-            f"Increase --max-length (current: {max_length}; try 2048 or 4096)."
+            f"Increase max_length in config.toml (current: {max_length}; try 2048 or 4096)."
         ) from exc
 
 

@@ -15,6 +15,7 @@ from typing_extensions import Unpack
 if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
+from delta_embed_vl import cfg
 from delta_embed_vl.model.pooling import last_token_pool, normalize
 from delta_embed_vl.model.student import (
     STUDENT_MODEL_ID,
@@ -22,11 +23,8 @@ from delta_embed_vl.model.student import (
     load_student,
 )
 from delta_embed_vl.model.tokenization import EmbeddingInput, build_student_batch
-from delta_embed_vl.settings import Settings
 
 logger = logging.getLogger(__name__)
-_DEFAULT_EVAL_BATCH_SIZE = 16
-_SETTINGS = Settings()
 
 
 def _as_mteb_model_name(model_name: str) -> str:
@@ -83,7 +81,7 @@ class DeltaEmbedEncoder:
         model_name: str = STUDENT_MODEL_ID,
         revision: str | None = None,
         device: str | None = None,
-        max_length: int = _SETTINGS.student_max_length,
+        max_length: int = cfg["max_length"],
         attention: str | None = None,
         **kwargs: Any,
     ) -> None:
@@ -112,7 +110,7 @@ class DeltaEmbedEncoder:
         **kwargs: Unpack[EncodeKwargs],
     ) -> Array:
         all_texts: list[str] = [text for batch in inputs for text in batch["text"]]
-        batch_size = kwargs.get("batch_size", _DEFAULT_EVAL_BATCH_SIZE)
+        batch_size = kwargs.get("batch_size", cfg["train"]["batch_size"])
         all_embeddings: list[torch.Tensor] = []
 
         with torch.no_grad():
@@ -215,8 +213,8 @@ class DeltaEmbedEncoder:
 def run_eval(
     model_path: str = STUDENT_MODEL_ID,
     tasks: list[str] | None = None,
-    eval_batch_size: int = _DEFAULT_EVAL_BATCH_SIZE,
-    max_length: int = _SETTINGS.student_max_length,
+    eval_batch_size: int = cfg["train"]["batch_size"],
+    max_length: int = cfg["max_length"],
     device: str | None = None,
     attention: str | None = None,
 ) -> ModelResult:

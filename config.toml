@@ -1,0 +1,32 @@
+name = "delta-embed-vl"
+id = "ljt019/delta-embed-vl" 
+student_id = "Qwen/Qwen3.5-0.8B-Base" 
+max_length = 8192 
+attention = "sdpa"
+
+[train]
+max_steps = 10 
+batch_size = 4
+lr = 2e-5
+warmup_ratio = 0.1
+grad_accum_steps = 1
+seed = 42 
+
+[data]
+id = "ljt019/delta-embed-vl-dataset" 
+model_id = "Qwen/Qwen3-VL-Embedding-8B"
+batch_size = 8
+wikipedia_ratio = 0.4
+save_interval = 100
+
+[ckpt]
+save_interval = 15 
+max_save_num = 5 
+
+[wandb]
+project = "delta-embed-vl" 
+name = "dev"
+save_interval = 1
+
+[log]
+level = "debug" 

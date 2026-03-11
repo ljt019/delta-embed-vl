@@ -1,9 +1,13 @@
 import logging
 import random
+import tomllib
+from pathlib import Path
 
 import numpy as np
 import torch
 from datasets import disable_progress_bars
+
+cfg: dict = tomllib.loads(Path("config.toml").read_text())
 
 _LOG_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _NOISY_LOGGERS = (
@@ -17,7 +21,8 @@ _NOISY_LOGGERS = (
 
 
 def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format=_LOG_FMT, force=True)
+    level = getattr(logging, cfg.get("log", {}).get("level", "info").upper(), logging.INFO)
+    logging.basicConfig(level=level, format=_LOG_FMT, force=True)
     disable_progress_bars()
     for logger_name in _NOISY_LOGGERS:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
