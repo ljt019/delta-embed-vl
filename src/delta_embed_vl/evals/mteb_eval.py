@@ -238,6 +238,7 @@ def run_eval(
         encoder,
         mteb_tasks,
         encode_kwargs={"batch_size": eval_batch_size},
+        overwrite_results=True,
     )
 
     for task_result in result.task_results:
