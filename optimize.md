@@ -4,7 +4,7 @@ Autonomous optimization of the data preparation pipeline.
 
 ## Goal
 
-Minimize wall-clock time for `uv run prepare --limit 10 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better.
+Minimize wall-clock time for `uv run prepare --limit 5 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better.
 
 ## Setup
 
@@ -21,7 +21,7 @@ Work with the user to:
    - `src/delta_embed_vl/model/tokenization.py` — tokenizer and processor utilities.
    - `src/delta_embed_vl/prepare.py` — CLI entry point.
    - `config.toml` — project configuration.
-5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 10` once first.
+5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 5` once first.
 6. **Confirm and go**.
 
 ## The benchmark command
@@ -29,7 +29,7 @@ Work with the user to:
 Always run exactly this:
 
 ```bash
-uv run prepare --limit 10 --rebuild-normalized --detailed-timings > run.log 2>&1
+uv run prepare --limit 5 --rebuild-normalized --detailed-timings > run.log 2>&1
 ```
 
 This ensures:
@@ -70,9 +70,9 @@ grep "Dataset saved: rows=" run.log
 Example output:
 
 ```
-TIMING stage=normalize_total elapsed_s=8.123 rows=1700 rows_per_s=209.3 limit=10
+TIMING stage=normalize_total elapsed_s=8.123 rows=1700 rows_per_s=209.3 limit=5
 TIMING stage=embed_total elapsed_s=25.456 rows=1700 rows_per_s=66.8 devices=8
-TIMING stage=prepare_total elapsed_s=38.901 rows=1700 rows_per_s=43.7 limit=10 ...
+TIMING stage=prepare_total elapsed_s=38.901 rows=1700 rows_per_s=43.7 limit=5 ...
 Dataset saved: rows=1700 path=data/dataset
 ```
 
@@ -126,7 +126,7 @@ LOOP FOREVER:
 1. Look at the current git state and results so far.
 2. Edit one or more of the allowed files with an optimization idea.
 3. `git commit -m "description of change"`
-4. Run: `uv run prepare --limit 10 --no-stream --rebuild-normalized --detailed-timings > run.log 2>&1`
+4. Run: `uv run prepare --limit 5 --rebuild-normalized --detailed-timings > run.log 2>&1`
 5. Extract results: `grep "TIMING stage=\(normalize_total\|embed_total\|prepare_total\)" run.log` and `grep "Dataset saved: rows=" run.log`
 6. If grep output is empty, the run crashed. `tail -n 50 run.log` to diagnose.
 7. Record results in `prep_results.tsv`.
