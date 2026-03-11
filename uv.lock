@@ -296,6 +296,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
+    { name = "hf" },
     { name = "httpx" },
     { name = "mteb" },
     { name = "numpy" },
@@ -330,6 +331,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=4.6.1" },
     { name = "flash-attn", marker = "python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'accel'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3+cu128torch2.8-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl" },
     { name = "flash-linear-attention", marker = "python_full_version == '3.13.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'accel'" },
+    { name = "hf", specifier = ">=1.6.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mteb", specifier = ">=2.10.5" },
     { name = "numpy", specifier = ">=2.4.2" },
@@ -553,6 +555,18 @@ wheels = [
 ]
 
 [[package]]
+name = "hf"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/5c/29c53115777c9c092576980a317474b9fd03957dd04e2c2d5df9d0e70e7b/hf-1.6.0.tar.gz", hash = "sha256:3a82b5d4dd0a56dfd63dd280e4cd2fc16989bece51f6fd9ddd3a9670087d5e1f", size = 2473, upload-time = "2026-03-06T14:19:12.591Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/64/d14779c71f95e94aa3ce7a63af9536c7ab0ee4c9ec98f213e1010bec5349/hf-1.6.0-py3-none-any.whl", hash = "sha256:e41a59f1d7dc9ee506d42203299dbfe3e1a6e4141c1c8e760917331fac6585da", size = 2404, upload-time = "2026-03-06T14:19:09.53Z" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -614,7 +628,7 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "1.5.0"
+version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -627,9 +641,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ae/76/b5efb3033d8499b17f9386beaf60f64c461798e1ee16d10bc9c0077beba5/huggingface_hub-1.5.0.tar.gz", hash = "sha256:f281838db29265880fb543de7a23b0f81d3504675de82044307ea3c6c62f799d", size = 695872, upload-time = "2026-02-26T15:35:32.745Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/7a/304cec37112382c4fe29a43bcb0d5891f922785d18745883d2aa4eb74e4b/huggingface_hub-1.6.0.tar.gz", hash = "sha256:d931ddad8ba8dfc1e816bf254810eb6f38e5c32f60d4184b5885662a3b167325", size = 717071, upload-time = "2026-03-06T14:19:18.524Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ec/74/2bc951622e2dbba1af9a460d93c51d15e458becd486e62c29cc0ccb08178/huggingface_hub-1.5.0-py3-none-any.whl", hash = "sha256:c9c0b3ab95a777fc91666111f3b3ede71c0cdced3614c553a64e98920585c4ee", size = 596261, upload-time = "2026-02-26T15:35:31.1Z" },
+    { url = "https://files.pythonhosted.org/packages/92/e3/e3a44f54c8e2f28983fcf07f13d4260b37bd6a0d3a081041bc60b91d230e/huggingface_hub-1.6.0-py3-none-any.whl", hash = "sha256:ef40e2d5cb85e48b2c067020fa5142168342d5108a1b267478ed384ecbf18961", size = 612874, upload-time = "2026-03-06T14:19:16.844Z" },
 ]
 
 [[package]]

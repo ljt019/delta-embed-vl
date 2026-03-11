@@ -13,6 +13,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "datasets>=4.6.1",
+    "hf>=1.6.0",
     "httpx>=0.28.1",
     "mteb>=2.10.5",
     "numpy>=2.4.2",
