@@ -190,7 +190,32 @@ def train_model(*, push_to_hub: bool = False) -> None:
     n = len(dataset)
     if n == 0:
         raise ValueError("No training samples found.")
-    logger.info("Training on %d samples for %d steps", n, max_steps)
+
+    text_only_ratio = cfg["train"]["text_only_ratio"]
+    sources = dataset["source"]
+    is_text_only = np.array([s == "wikipedia" for s in sources], dtype=np.float64)
+    n_text = int(is_text_only.sum())
+    n_multi = n - n_text
+    if n_text > 0 and n_multi > 0:
+        target_text_weight = text_only_ratio
+        target_multi_weight = 1.0 - text_only_ratio
+        sample_weights = np.where(
+            is_text_only,
+            target_text_weight / n_text,
+            target_multi_weight / n_multi,
+        )
+        sample_weights /= sample_weights.sum()
+    else:
+        sample_weights = np.ones(n, dtype=np.float64) / n
+
+    logger.info(
+        "Training on %d samples for %d steps (text_only=%d multimodal=%d ratio=%.2f)",
+        n,
+        max_steps,
+        n_text,
+        n_multi,
+        text_only_ratio,
+    )
 
     wandb_run = None
     if cfg["wandb"]["project"] is not None:
@@ -223,8 +248,9 @@ def train_model(*, push_to_hub: bool = False) -> None:
             num_training_steps=max_steps,
         )
 
-        indices = np.arange(n, dtype=np.int64)
-        cursor = n  # force shuffle on first iteration
+        epoch_size = max(n, max_steps * batch_size)
+        indices = np.random.choice(n, size=epoch_size, replace=True, p=sample_weights)
+        cursor = 0
         global_step = 0
         micro_step = 0
         running_loss = 0.0
@@ -233,12 +259,14 @@ def train_model(*, push_to_hub: bool = False) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         while global_step < max_steps:
-            if cursor >= n:
-                np.random.shuffle(indices)
+            if cursor >= len(indices):
+                indices = np.random.choice(
+                    n, size=epoch_size, replace=True, p=sample_weights
+                )
                 cursor = 0
 
             batch_start_s = time.monotonic()
-            batch_end = min(cursor + batch_size, n)
+            batch_end = min(cursor + batch_size, len(indices))
             batch_indices = indices[cursor:batch_end]
             cursor = batch_end
 

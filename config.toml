@@ -13,7 +13,7 @@ grad_accum_steps = 1
 seed = 42 
 
 [data]
-id = "ljt019/delta-embed-vl-dataset" 
+id = "ljt019/delta-embed-vl-10000" 
 model_id = "Qwen/Qwen3-VL-Embedding-8B"
 batch_size = 128
 text_only_ratio = 0.4
