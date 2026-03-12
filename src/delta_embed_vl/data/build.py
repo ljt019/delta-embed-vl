@@ -649,7 +649,7 @@ def _embed_shard(
                 pct = (total - free) / total * 100
                 peak_pct = max(peak_pct, pct)
 
-            if len(pending_writes) >= 5:
+            if len(pending_writes) >= 6:
                 pending_writes.popleft().result()
             pending_writes.append(
                 writer_pool.submit(
