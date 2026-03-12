@@ -5,7 +5,6 @@ import logging
 import math
 import os
 import shutil
-import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -494,12 +493,10 @@ def _normalize_task_to_arrow(
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     source_slug = task.source.replace("/", "-")
-    temp_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f"normalized-{source_slug}-{task.shard_index}-",
-            dir=temp_root,
-        )
+    temp_dir = Path(temp_root) / (
+        f"normalized-{source_slug}-{task.shard_index}-of-{task.num_shards}"
     )
+    temp_dir.mkdir(parents=True, exist_ok=True)
     arrow_path = temp_dir / "data.arrow"
     writer = ArrowWriter(path=str(arrow_path), features=_NORMALIZED_FEATURES)
     rows_written = 0
