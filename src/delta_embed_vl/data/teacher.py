@@ -117,6 +117,11 @@ def load_teacher(
     dtype: torch.dtype = torch.bfloat16,
     attn_implementation: str | None = None,
 ) -> TeacherEmbedder:
+    if device.startswith("cuda"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+
     processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
