@@ -566,6 +566,23 @@ def _load_embedding_batch(
     return {name: list(batch[name]) for name in _NORMALIZED_FEATURES}
 
 
+def _write_embedding_batch(
+    writer: ArrowWriter,
+    batch_rows: dict[str, list[object]],
+    embeddings: torch.Tensor,
+) -> None:
+    writer.write_batch(
+        {
+            "text": batch_rows["text"],
+            "image": batch_rows["image"],
+            "instruction": batch_rows["instruction"],
+            "source": batch_rows["source"],
+            "role": batch_rows["role"],
+            "teacher_embedding": embeddings.detach().cpu().float().numpy(),
+        }
+    )
+
+
 def _embed_shard(
     teacher: TeacherEmbedder,
     normalized_ds: Dataset,
@@ -631,17 +648,11 @@ def _embed_shard(
                 pct = (total - free) / total * 100
                 peak_pct = max(peak_pct, pct)
 
-            batch_payload = {
-                "text": batch_rows["text"],
-                "image": batch_rows["image"],
-                "instruction": batch_rows["instruction"],
-                "source": batch_rows["source"],
-                "role": batch_rows["role"],
-                "teacher_embedding": embeddings.detach().cpu().float().numpy(),
-            }
             if pending_write is not None:
                 pending_write.result()
-            pending_write = writer_pool.submit(writer.write_batch, batch_payload)
+            pending_write = writer_pool.submit(
+                _write_embedding_batch, writer, batch_rows, embeddings
+            )
             rows_written += len(chunk)
 
         if pending_write is not None:
