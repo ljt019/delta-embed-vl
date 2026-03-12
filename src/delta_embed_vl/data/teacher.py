@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 
 import torch
@@ -20,6 +21,7 @@ from delta_embed_vl.model.tokenization import (
 )
 
 logger = logging.getLogger(__name__)
+_HF_HUB_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
 
 @dataclass
@@ -110,6 +112,13 @@ def _get_teacher_hidden_size(model: Qwen3VLModel) -> int:
     raise AttributeError("Could not determine teacher hidden size from model config.")
 
 
+def _resolve_local_hf_snapshot(model_id: str) -> Path:
+    org, name = model_id.split("/", maxsplit=1)
+    repo_dir = _HF_HUB_DIR / f"models--{org}--{name}"
+    revision = (repo_dir / "refs" / "main").read_text().strip()
+    return repo_dir / "snapshots" / revision
+
+
 def load_teacher(
     model_id: str = cfg["data"]["model_id"],
     *,
@@ -122,10 +131,11 @@ def load_teacher(
         torch.backends.cudnn.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
 
+    model_path = _resolve_local_hf_snapshot(model_id)
     processor = cast(
         Qwen3VLProcessor,
         AutoProcessor.from_pretrained(
-            model_id,
+            model_path,
             trust_remote_code=True,
             local_files_only=True,
         ),
@@ -139,7 +149,7 @@ def load_teacher(
         )
         logger.info("Loading teacher with %s attention", resolved_attn_implementation)
         model = Qwen3VLModel.from_pretrained(
-            model_id,
+            model_path,
             torch_dtype=dtype,
             low_cpu_mem_usage=True,
             attn_implementation=resolved_attn_implementation,
@@ -147,7 +157,7 @@ def load_teacher(
         )
     else:
         model = Qwen3VLModel.from_pretrained(
-            model_id,
+            model_path,
             torch_dtype=dtype,
             low_cpu_mem_usage=True,
             local_files_only=True,
