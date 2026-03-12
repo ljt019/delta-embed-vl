@@ -296,7 +296,14 @@ def _yield_fitting_samples(
     processor = get_student_processor()
     fits = student_batch_fit_flags(
         processor,
-        [sample.to_embedding_input() for sample in candidates],
+        [
+            EmbeddingInput(
+                text=sample.text,
+                image=sample.image,
+                instruction=sample.instruction,
+            )
+            for sample in candidates
+        ],
         max_length=student_max_length,
         batch_size=batch_size,
     )
