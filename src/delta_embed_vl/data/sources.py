@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 
@@ -82,18 +83,27 @@ def _apply_image_cap(image: Image.Image) -> Image.Image:
     )
 
 
-def resolve_image_path(image_path: str | Path) -> Path | None:
-    path = Path(image_path)
+@lru_cache(maxsize=8192)
+def _resolve_image_path_cached(image_path_str: str) -> str | None:
+    path = Path(image_path_str)
     if path.exists():
-        return path
+        return str(path)
 
-    normalized_path = str(image_path).replace("\\", "/")
+    normalized_path = image_path_str.replace("\\", "/")
     resolved = _resolve_cached_image_path(normalized_path)
+    if resolved is None:
+        return None
+    return resolved
+
+
+def resolve_image_path(image_path: str | Path) -> Path | None:
+    resolved = _resolve_image_path_cached(str(image_path))
     if resolved is None:
         return None
     return Path(resolved)
 
 
+@lru_cache(maxsize=8192)
 def _resolve_cached_image_path(normalized_path: str) -> str | None:
     marker = "/downloads/extracted/"
     suffixes: list[str] = []
