@@ -587,11 +587,30 @@ def _embed_shard(
     gpu_available = device.startswith("cuda") and torch.cuda.is_available()
     peak_pct = 0.0
 
-    with ThreadPoolExecutor(max_workers=1) as writer_pool:
+    with (
+        ThreadPoolExecutor(max_workers=1) as writer_pool,
+        ThreadPoolExecutor(max_workers=1) as loader_pool,
+    ):
         pending_write = None
-        for start in range(0, len(indices), batch_size):
-            chunk = indices[start : start + batch_size]
-            batch_rows = _load_embedding_batch(normalized_ds, chunk)
+        chunk_starts = list(range(0, len(indices), batch_size))
+        chunk_slices = [
+            indices[start : start + batch_size] for start in chunk_starts
+        ]
+        pending_load = loader_pool.submit(
+            _load_embedding_batch,
+            normalized_ds,
+            chunk_slices[0],
+        )
+
+        for chunk_index, chunk in enumerate(chunk_slices):
+            batch_rows = pending_load.result()
+            if chunk_index + 1 < len(chunk_slices):
+                pending_load = loader_pool.submit(
+                    _load_embedding_batch,
+                    normalized_ds,
+                    chunk_slices[chunk_index + 1],
+                )
+
             inputs = [
                 EmbeddingInput(
                     text=text or None,
