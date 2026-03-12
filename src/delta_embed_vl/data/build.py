@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import time
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -608,7 +609,7 @@ def _embed_shard(
         ThreadPoolExecutor(max_workers=1) as writer_pool,
         ThreadPoolExecutor(max_workers=1) as loader_pool,
     ):
-        pending_write = None
+        pending_writes = deque()
         chunk_starts = list(range(0, len(indices), batch_size))
         chunk_slices = [
             indices[start : start + batch_size] for start in chunk_starts
@@ -648,15 +649,17 @@ def _embed_shard(
                 pct = (total - free) / total * 100
                 peak_pct = max(peak_pct, pct)
 
-            if pending_write is not None:
-                pending_write.result()
-            pending_write = writer_pool.submit(
-                _write_embedding_batch, writer, batch_rows, embeddings
+            if len(pending_writes) >= 2:
+                pending_writes.popleft().result()
+            pending_writes.append(
+                writer_pool.submit(
+                    _write_embedding_batch, writer, batch_rows, embeddings
+                )
             )
             rows_written += len(chunk)
 
-        if pending_write is not None:
-            pending_write.result()
+        while pending_writes:
+            pending_writes.popleft().result()
 
     writer.finalize()
     return temp_dir, rows_written, peak_pct, time.perf_counter() - shard_started
