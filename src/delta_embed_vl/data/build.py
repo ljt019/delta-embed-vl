@@ -552,6 +552,23 @@ def _detect_devices() -> list[str]:
     return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
 
 
+def _load_embedding_batch(
+    normalized_ds: Dataset,
+    indices: list[int],
+) -> dict[str, list[object]]:
+    if not indices:
+        return {name: [] for name in _NORMALIZED_FEATURES}
+
+    start = indices[0]
+    stop = indices[-1] + 1
+    if indices == list(range(start, stop)):
+        batch = normalized_ds[start:stop]
+    else:
+        batch = normalized_ds[indices]
+
+    return {name: list(batch[name]) for name in _NORMALIZED_FEATURES}
+
+
 def _embed_shard(
     teacher: TeacherEmbedder,
     normalized_ds: Dataset,
@@ -575,14 +592,19 @@ def _embed_shard(
 
     for start in range(0, len(indices), batch_size):
         chunk = indices[start : start + batch_size]
-        batch_rows = [normalized_ds[i] for i in chunk]
+        batch_rows = _load_embedding_batch(normalized_ds, chunk)
         inputs = [
             EmbeddingInput(
-                text=row.get("text") or None,
-                image=row.get("image"),
-                instruction=row.get("instruction") or DEFAULT_EMBED_INSTRUCTION,
+                text=text or None,
+                image=image,
+                instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
             )
-            for row in batch_rows
+            for text, image, instruction in zip(
+                batch_rows["text"],
+                batch_rows["image"],
+                batch_rows["instruction"],
+                strict=True,
+            )
         ]
         embeddings = teacher.embed(inputs)
 
@@ -594,12 +616,12 @@ def _embed_shard(
         embeddings_np = embeddings.detach().cpu().float().numpy()
         writer.write_batch(
             {
-                "text": [r["text"] for r in batch_rows],
-                "image": [r["image"] for r in batch_rows],
-                "instruction": [r["instruction"] for r in batch_rows],
-                "source": [r["source"] for r in batch_rows],
-                "role": [r["role"] for r in batch_rows],
-                "teacher_embedding": [emb.tolist() for emb in embeddings_np],
+                "text": batch_rows["text"],
+                "image": batch_rows["image"],
+                "instruction": batch_rows["instruction"],
+                "source": batch_rows["source"],
+                "role": batch_rows["role"],
+                "teacher_embedding": embeddings_np,
             }
         )
         rows_written += len(chunk)
