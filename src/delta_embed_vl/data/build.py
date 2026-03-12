@@ -587,41 +587,46 @@ def _embed_shard(
     gpu_available = device.startswith("cuda") and torch.cuda.is_available()
     peak_pct = 0.0
 
-    for start in range(0, len(indices), batch_size):
-        chunk = indices[start : start + batch_size]
-        batch_rows = _load_embedding_batch(normalized_ds, chunk)
-        inputs = [
-            EmbeddingInput(
-                text=text or None,
-                image=image,
-                instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
-            )
-            for text, image, instruction in zip(
-                batch_rows["text"],
-                batch_rows["image"],
-                batch_rows["instruction"],
-                strict=True,
-            )
-        ]
-        embeddings = teacher.embed(inputs)
+    with ThreadPoolExecutor(max_workers=1) as writer_pool:
+        pending_write = None
+        for start in range(0, len(indices), batch_size):
+            chunk = indices[start : start + batch_size]
+            batch_rows = _load_embedding_batch(normalized_ds, chunk)
+            inputs = [
+                EmbeddingInput(
+                    text=text or None,
+                    image=image,
+                    instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
+                )
+                for text, image, instruction in zip(
+                    batch_rows["text"],
+                    batch_rows["image"],
+                    batch_rows["instruction"],
+                    strict=True,
+                )
+            ]
+            embeddings = teacher.embed(inputs)
 
-        if gpu_available:
-            free, total = torch.cuda.mem_get_info(device)
-            pct = (total - free) / total * 100
-            peak_pct = max(peak_pct, pct)
+            if gpu_available:
+                free, total = torch.cuda.mem_get_info(device)
+                pct = (total - free) / total * 100
+                peak_pct = max(peak_pct, pct)
 
-        embeddings_np = embeddings.detach().cpu().float().numpy()
-        writer.write_batch(
-            {
+            batch_payload = {
                 "text": batch_rows["text"],
                 "image": batch_rows["image"],
                 "instruction": batch_rows["instruction"],
                 "source": batch_rows["source"],
                 "role": batch_rows["role"],
-                "teacher_embedding": embeddings_np,
+                "teacher_embedding": embeddings.detach().cpu().float().numpy(),
             }
-        )
-        rows_written += len(chunk)
+            if pending_write is not None:
+                pending_write.result()
+            pending_write = writer_pool.submit(writer.write_batch, batch_payload)
+            rows_written += len(chunk)
+
+        if pending_write is not None:
+            pending_write.result()
 
     writer.finalize()
     return temp_dir, rows_written, peak_pct, time.perf_counter() - shard_started
