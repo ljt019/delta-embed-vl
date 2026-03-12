@@ -121,19 +121,26 @@ def _resolve_cached_image_path(normalized_path: str) -> str | None:
     return None
 
 
+def _coerce_opened_image_to_rgb(image: Image.Image) -> Image.Image:
+    if image.mode == "RGB":
+        image.load()
+        return _apply_image_cap(image)
+    return _apply_image_cap(image.convert("RGB"))
+
+
 def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
     if image is None:
         return None
 
     if isinstance(image, Image.Image):
-        return _apply_image_cap(image.convert("RGB"))
+        return _coerce_opened_image_to_rgb(image)
 
     if isinstance(image, (str, Path)):
         resolved_path = resolve_image_path(image)
         if resolved_path is None:
             return None
         with Image.open(resolved_path) as loaded:
-            return _apply_image_cap(loaded.convert("RGB"))
+            return _coerce_opened_image_to_rgb(loaded)
 
     image_bytes = image.get("bytes")
     if image_bytes is not None:
@@ -144,7 +151,7 @@ def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
         elif isinstance(image_bytes, list):
             image_bytes = bytes(image_bytes)
         with Image.open(io.BytesIO(image_bytes)) as loaded:
-            return _apply_image_cap(loaded.convert("RGB"))
+            return _coerce_opened_image_to_rgb(loaded)
 
     image_path = image.get("path")
     if image_path:
@@ -152,7 +159,7 @@ def coerce_image_to_rgb(image: ImageLike) -> Image.Image | None:
         if resolved_path is None:
             return None
         with Image.open(resolved_path) as loaded:
-            return _apply_image_cap(loaded.convert("RGB"))
+            return _coerce_opened_image_to_rgb(loaded)
 
     return None
 
