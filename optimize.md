@@ -1,16 +1,18 @@
-# prep_program.md
+# optimize.md
 
-Autonomous optimization of the data preparation pipeline.
+Autonomous optimization of the data preparation pipeline, focused on teacher embedding throughput.
 
 ## Goal
 
-Minimize wall-clock time for `uv run prepare --limit 5 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better.
+Minimize wall-clock time for `uv run prepare --limit 50 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better.
+
+**Priority**: Teacher embedding is ~85% of total prep time. Focus optimization efforts there. Normalization is already well-optimized from the previous research round.
 
 ## Setup
 
 Work with the user to:
 
-1. **Agree on a run tag** based on today's date (e.g. `mar11`). Branch `autoresearch/prep-<tag>` must not already exist.
+1. **Agree on a run tag** based on today's date (e.g. `mar12`). Branch `autoresearch/prep-<tag>` must not already exist.
 2. **Create the branch**: `git checkout -b autoresearch/prep-<tag>`
 3. **Read the mutable files** for full context:
    - `src/delta_embed_vl/data/build.py` — normalization orchestration, CPU parallelism, teacher embedding, dataset assembly.
@@ -21,15 +23,16 @@ Work with the user to:
    - `src/delta_embed_vl/model/tokenization.py` — tokenizer and processor utilities.
    - `src/delta_embed_vl/prepare.py` — CLI entry point.
    - `config.toml` — project configuration.
-5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 5` once first.
-6. **Confirm and go**.
+5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 50 --no-stream` once first.
+6. **Initialize prep_results.tsv** with just the header row.
+7. **Confirm and go**.
 
 ## The benchmark command
 
 Always run exactly this:
 
 ```bash
-uv run prepare --limit 5 --rebuild-normalized --detailed-timings > run.log 2>&1
+uv run prepare --limit 50 --rebuild-normalized --detailed-timings > run.log 2>&1
 ```
 
 This ensures:
@@ -63,27 +66,21 @@ Everything in these files is fair game: parallelism strategy, batch sizes, data 
 After a run, extract the key metrics:
 
 ```bash
-grep "TIMING stage=normalize_total\|TIMING stage=embed_total\|TIMING stage=prepare_total" run.log
+grep "TIMING stage=normalize_total\|TIMING stage=embed_total\|TIMING stage=embed_compute\|TIMING stage=embed_teacher_load\|TIMING stage=prepare_total" run.log
 grep "Dataset saved: rows=" run.log
-```
-
-Example output:
-
-```
-TIMING stage=normalize_total elapsed_s=8.123 rows=1700 rows_per_s=209.3 limit=5
-TIMING stage=embed_total elapsed_s=25.456 rows=1700 rows_per_s=66.8 devices=8
-TIMING stage=prepare_total elapsed_s=38.901 rows=1700 rows_per_s=43.7 limit=5 ...
-Dataset saved: rows=1700 path=data/dataset
 ```
 
 **Primary metric**: `prepare_total` elapsed_s — lower is better.
 
-**Secondary metrics** (for diagnosing where time goes):
+**Key secondary metrics** (focus your analysis here):
+- `embed_total` — total GPU teacher embedding time (includes model load). This is the dominant cost.
+- `embed_teacher_load` — teacher model load time. One-time cost per run.
+- `embed_compute` — pure embedding inference time. The main target for optimization.
+- `embed_shard` — per-device shard timings (rows_per_s is the key throughput number).
+
+**Lower priority** (already well-optimized):
 - `normalize_total` — CPU normalization time.
-- `embed_total` — GPU teacher embedding time (includes model load).
-- `embed_teacher_load` — teacher model load time.
-- `embed_compute` — pure embedding inference time.
-- `normalize_generate` — normalization worker time (excludes merge/save).
+- `normalize_generate` — normalization worker time.
 
 ## Correctness rule
 
@@ -109,16 +106,6 @@ commit	prepare_s	normalize_s	embed_s	rows	status	description
 - `status`: `keep`, `discard`, or `crash`
 - `description`: short text of what the experiment tried
 
-Example:
-
-```
-commit	prepare_s	normalize_s	embed_s	rows	status	description
-a1b2c3d	38.901	8.123	25.456	1700	keep	baseline
-b2c3d4e	34.210	5.891	23.100	1700	keep	batch normalize buffer from 512 to 2048
-c3d4e5f	36.500	4.200	27.800	1650	discard	row count changed (1650 != 1700)
-d4e5f6g	0.000	0.000	0.000	0	crash	OOM in teacher embedding
-```
-
 ## The experiment loop
 
 LOOP FOREVER:
@@ -126,25 +113,32 @@ LOOP FOREVER:
 1. Look at the current git state and results so far.
 2. Edit one or more of the allowed files with an optimization idea.
 3. `git commit -m "description of change"`
-4. Run: `uv run prepare --limit 5 --rebuild-normalized --detailed-timings > run.log 2>&1`
+4. Run: `uv run prepare --limit 50 --rebuild-normalized --detailed-timings > run.log 2>&1`
 5. Extract results: `grep "TIMING stage=\(normalize_total\|embed_total\|prepare_total\)" run.log` and `grep "Dataset saved: rows=" run.log`
 6. If grep output is empty, the run crashed. `tail -n 50 run.log` to diagnose.
 7. Record results in `prep_results.tsv`.
 8. **If `prepare_total` improved AND row count matches baseline**: keep the commit, advance the branch.
 9. **If `prepare_total` is equal or worse, OR row count changed**: `git reset --hard HEAD~1` to discard.
 
-## Optimization ideas to consider
+## Embedding optimization ideas to prioritize
 
-- Normalization buffer sizes and batch sizes.
-- Arrow writer batch sizes.
-- Image processing (resize strategy, decode timing).
-- Tokenizer call patterns (batching, caching).
-- Teacher embedding batch size vs memory tradeoff.
-- Teacher model dtype or compilation (`torch.compile`).
-- Reducing unnecessary data copies or conversions.
-- More efficient Arrow serialization.
-- Process pool vs thread pool tradeoffs.
-- Reducing per-worker startup overhead.
+Since embedding is ~85% of total time, focus here:
+
+- `torch.compile` on the teacher model forward pass.
+- Teacher model dtype experiments (bf16 vs fp16 vs mixed).
+- Batching strategy: dynamic batch sizing based on sequence length.
+- Reducing CPU-GPU data transfer overhead.
+- Teacher processor optimizations (faster tokenization, image preprocessing).
+- Pinned memory for CPU→GPU transfers.
+- Reducing Arrow serialization overhead in the embedding write path.
+- Async overlap: start next batch preprocessing while current batch is on GPU.
+- CUDA graph capture for repeated inference patterns.
+- Reducing teacher model load time (lazy loading, memory mapping).
+
+Lower priority (normalization is already fast):
+- Normalization buffer sizes.
+- Image processing tweaks.
+- Process pool tuning.
 
 ## Important rules
 
