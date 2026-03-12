@@ -4,7 +4,7 @@ Autonomous optimization of the data preparation pipeline, focused on teacher emb
 
 ## Goal
 
-Minimize wall-clock time for `uv run prepare --limit 50 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better.
+Minimize wall-clock time for `uv run prepare --limit 50 --rebuild-normalized --detailed-timings` while producing the exact same output rows. Lower `prepare_total` elapsed_s is better. Do not use `--no-stream` — raw data is cached after the first run automatically.
 
 **Priority**: Teacher embedding is ~85% of total prep time. Focus optimization efforts there. Normalization is already well-optimized from the previous research round.
 
@@ -23,7 +23,7 @@ Work with the user to:
    - `src/delta_embed_vl/model/tokenization.py` — tokenizer and processor utilities.
    - `src/delta_embed_vl/prepare.py` — CLI entry point.
    - `config.toml` — project configuration.
-5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 50 --no-stream` once first.
+5. **Verify raw cache is warm**: Run `ls data/raw/` and confirm wikipedia and cauldron directories exist. If not, tell the human to run `uv run prepare --limit 50` once first.
 6. **Initialize prep_results.tsv** with just the header row.
 7. **Confirm and go**.
 
