@@ -56,7 +56,7 @@ _DATASET_FEATURES = Features(
 
 _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
-_EMBED_REBUCKET_WINDOW_BATCHES = 2
+_EMBED_REBUCKET_WINDOW_BATCHES = 4
 
 
 @dataclass(frozen=True)
@@ -585,16 +585,13 @@ def _embedding_rebucket_key(
     text: object,
     image: object,
     instruction: object,
-) -> tuple[int, int, int]:
+) -> int:
     image_area = 0
     if image is not None:
         width, height = image.size
         image_area = width * height
-    return (
-        1 if image is not None else 0,
-        image_area,
-        len(instruction or DEFAULT_EMBED_INSTRUCTION) + len(text or ""),
-    )
+    prompt_chars = len(instruction or DEFAULT_EMBED_INSTRUCTION) + len(text or "")
+    return 2 * math.isqrt(image_area) + prompt_chars
 
 
 def _prepare_embedding_window(
