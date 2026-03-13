@@ -58,6 +58,7 @@ _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
 _EMBED_REBUCKET_WINDOW_BATCHES = 5
 _MAX_REBUCKETED_TEACHER_BATCH_SIZE = 72
+_MAX_PENDING_EMBED_WRITES = 9
 
 
 @dataclass(frozen=True)
@@ -787,7 +788,7 @@ def _embed_shard(
                     and slice_remaining[next_write_start // batch_size] == 0
                 ):
                     stop = min(next_write_start + batch_size, len(chunk))
-                    if len(pending_writes) >= 8:
+                    if len(pending_writes) >= _MAX_PENDING_EMBED_WRITES:
                         pending_writes.popleft().result()
                     pending_writes.append(
                         writer_pool.submit(
