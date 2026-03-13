@@ -56,6 +56,7 @@ _DATASET_FEATURES = Features(
 
 _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
+_EMBED_REBUCKET_WINDOW_BATCHES = 2
 
 
 @dataclass(frozen=True)
@@ -579,6 +580,49 @@ def _load_embedding_batch(
     return {name: list(batch[name]) for name in _NORMALIZED_FEATURES}
 
 
+def _embedding_rebucket_key(
+    *,
+    text: object,
+    image: object,
+    instruction: object,
+) -> tuple[int, int, int]:
+    image_area = 0
+    if image is not None:
+        width, height = image.size
+        image_area = width * height
+    return (
+        1 if image is not None else 0,
+        image_area,
+        len(instruction or DEFAULT_EMBED_INSTRUCTION) + len(text or ""),
+    )
+
+
+def _prepare_embedding_window(
+    normalized_ds: Dataset,
+    indices: list[int],
+    batch_size: int,
+) -> tuple[dict[str, list[object]], list[list[int]]]:
+    window_rows = _load_embedding_batch(normalized_ds, indices)
+    window_size = len(window_rows["text"])
+    if window_size == 0:
+        return window_rows, []
+
+    sort_order = sorted(
+        range(window_size),
+        key=lambda idx: _embedding_rebucket_key(
+            text=window_rows["text"][idx],
+            image=window_rows["image"][idx],
+            instruction=window_rows["instruction"][idx],
+        ),
+        reverse=True,
+    )
+    grouped_positions = [
+        sort_order[start : start + batch_size]
+        for start in range(0, len(sort_order), batch_size)
+    ]
+    return window_rows, grouped_positions
+
+
 def _write_embedding_batch(
     writer: ArrowWriter,
     batch_rows: dict[str, list[object]],
@@ -594,6 +638,21 @@ def _write_embedding_batch(
             "teacher_embedding": embeddings.detach().cpu().float().numpy(),
         }
     )
+
+
+def _select_batch_rows(
+    batch_rows: dict[str, list[object]],
+    positions: list[int],
+) -> dict[str, list[object]]:
+    return {name: [values[idx] for idx in positions] for name, values in batch_rows.items()}
+
+
+def _slice_batch_rows(
+    batch_rows: dict[str, list[object]],
+    start: int,
+    stop: int,
+) -> dict[str, list[object]]:
+    return {name: values[start:stop] for name, values in batch_rows.items()}
 
 
 def _embed_shard(
@@ -622,53 +681,74 @@ def _embed_shard(
         ThreadPoolExecutor(max_workers=1) as loader_pool,
     ):
         pending_writes = deque()
-        chunk_starts = list(range(0, len(indices), batch_size))
+        window_size = batch_size * _EMBED_REBUCKET_WINDOW_BATCHES
+        chunk_starts = list(range(0, len(indices), window_size))
         chunk_slices = [
-            indices[start : start + batch_size] for start in chunk_starts
+            indices[start : start + window_size] for start in chunk_starts
         ]
         pending_load = loader_pool.submit(
-            _load_embedding_batch,
+            _prepare_embedding_window,
             normalized_ds,
             chunk_slices[0],
+            batch_size,
         )
 
         for chunk_index, chunk in enumerate(chunk_slices):
-            batch_rows = pending_load.result()
+            window_rows, grouped_positions = pending_load.result()
             if chunk_index + 1 < len(chunk_slices):
                 pending_load = loader_pool.submit(
-                    _load_embedding_batch,
+                    _prepare_embedding_window,
                     normalized_ds,
                     chunk_slices[chunk_index + 1],
+                    batch_size,
                 )
 
-            inputs = [
-                EmbeddingInput(
-                    text=text or None,
-                    image=image,
-                    instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
-                )
-                for text, image, instruction in zip(
-                    batch_rows["text"],
-                    batch_rows["image"],
-                    batch_rows["instruction"],
-                    strict=True,
-                )
-            ]
-            embeddings = teacher.embed(inputs)
+            window_embeddings: torch.Tensor | None = None
+            for positions in grouped_positions:
+                bucket_rows = _select_batch_rows(window_rows, positions)
+                inputs = [
+                    EmbeddingInput(
+                        text=text or None,
+                        image=image,
+                        instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
+                    )
+                    for text, image, instruction in zip(
+                        bucket_rows["text"],
+                        bucket_rows["image"],
+                        bucket_rows["instruction"],
+                        strict=True,
+                    )
+                ]
+                embeddings = teacher.embed(inputs)
+                if window_embeddings is None:
+                    window_embeddings = torch.empty(
+                        (len(chunk), embeddings.shape[1]),
+                        device=embeddings.device,
+                        dtype=embeddings.dtype,
+                    )
+                window_embeddings[positions] = embeddings
 
-            if gpu_available:
-                free, total = torch.cuda.mem_get_info(device)
-                pct = (total - free) / total * 100
-                peak_pct = max(peak_pct, pct)
+                if gpu_available:
+                    free, total = torch.cuda.mem_get_info(device)
+                    pct = (total - free) / total * 100
+                    peak_pct = max(peak_pct, pct)
 
-            if len(pending_writes) >= 8:
-                pending_writes.popleft().result()
-            pending_writes.append(
-                writer_pool.submit(
-                    _write_embedding_batch, writer, batch_rows, embeddings
+            if window_embeddings is None:
+                continue
+
+            for start in range(0, len(chunk), batch_size):
+                stop = min(start + batch_size, len(chunk))
+                if len(pending_writes) >= 8:
+                    pending_writes.popleft().result()
+                pending_writes.append(
+                    writer_pool.submit(
+                        _write_embedding_batch,
+                        writer,
+                        _slice_batch_rows(window_rows, start, stop),
+                        window_embeddings[start:stop],
+                    )
                 )
-            )
-            rows_written += len(chunk)
+                rows_written += stop - start
 
         while pending_writes:
             pending_writes.popleft().result()
