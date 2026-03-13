@@ -57,6 +57,7 @@ _DATASET_FEATURES = Features(
 _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
 _EMBED_REBUCKET_WINDOW_BATCHES = 5
+_MAX_REBUCKETED_TEACHER_BATCH_SIZE = 72
 
 
 @dataclass(frozen=True)
@@ -594,6 +595,41 @@ def _embedding_rebucket_key(
     return 2 * math.isqrt(image_area) + prompt_chars
 
 
+def _group_rebucketed_positions(
+    sort_order: list[int],
+    sorted_keys: list[int],
+    *,
+    batch_size: int,
+) -> list[list[int]]:
+    if not sort_order:
+        return []
+
+    max_batch_size = (
+        _MAX_REBUCKETED_TEACHER_BATCH_SIZE
+        if batch_size >= 65
+        else batch_size
+    )
+    if max_batch_size <= batch_size:
+        return [
+            sort_order[start : start + batch_size]
+            for start in range(0, len(sort_order), batch_size)
+        ]
+
+    base_budget = batch_size * max(1, sorted_keys[0])
+    grouped_positions: list[list[int]] = []
+    start = 0
+    while start < len(sort_order):
+        current_key = max(1, sorted_keys[start])
+        group_size = min(
+            max_batch_size,
+            max(batch_size, base_budget // current_key),
+        )
+        stop = min(start + group_size, len(sort_order))
+        grouped_positions.append(sort_order[start:stop])
+        start = stop
+    return grouped_positions
+
+
 def _prepare_embedding_window(
     normalized_ds: Dataset,
     indices: list[int],
@@ -604,19 +640,29 @@ def _prepare_embedding_window(
     if window_size == 0:
         return window_rows, []
 
+    embedding_keys = [
+        _embedding_rebucket_key(
+            text=text,
+            image=image,
+            instruction=instruction,
+        )
+        for text, image, instruction in zip(
+            window_rows["text"],
+            window_rows["image"],
+            window_rows["instruction"],
+            strict=True,
+        )
+    ]
     sort_order = sorted(
         range(window_size),
-        key=lambda idx: _embedding_rebucket_key(
-            text=window_rows["text"][idx],
-            image=window_rows["image"][idx],
-            instruction=window_rows["instruction"][idx],
-        ),
+        key=embedding_keys.__getitem__,
         reverse=True,
     )
-    grouped_positions = [
-        sort_order[start : start + batch_size]
-        for start in range(0, len(sort_order), batch_size)
-    ]
+    grouped_positions = _group_rebucketed_positions(
+        sort_order,
+        [embedding_keys[idx] for idx in sort_order],
+        batch_size=batch_size,
+    )
     return window_rows, grouped_positions
 
 
