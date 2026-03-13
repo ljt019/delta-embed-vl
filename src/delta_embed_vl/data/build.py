@@ -550,6 +550,18 @@ def _detect_devices() -> list[str]:
     return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
 
 
+def _resolve_teacher_batch_size(batch_size: int, devices: list[str]) -> int:
+    if batch_size != 64 or not devices or not all(d.startswith("cuda") for d in devices):
+        return batch_size
+
+    min_total_memory = min(
+        torch.cuda.get_device_properties(device).total_memory for device in devices
+    )
+    if min_total_memory >= 75 * 1024**3:
+        return 65
+    return batch_size
+
+
 def _load_embedding_batch(
     normalized_ds: Dataset,
     indices: list[int],
@@ -674,6 +686,7 @@ def _embed_normalized(
 ) -> tuple[Dataset, list[Path]]:
     embed_started = time.perf_counter()
     devices = _detect_devices()
+    effective_batch_size = _resolve_teacher_batch_size(teacher_batch_size, devices)
     n = len(normalized_ds)
 
     if n == 0:
@@ -707,7 +720,7 @@ def _embed_normalized(
     compute_started = time.perf_counter()
     if num_shards == 1:
         temp_dir, rows, peak, elapsed_s = _embed_shard(
-            teachers[0], normalized_ds, shard_indices[0], teacher_batch_size, 0
+            teachers[0], normalized_ds, shard_indices[0], effective_batch_size, 0
         )
         temp_dirs.append(temp_dir)
         shard_results = [(temp_dir, rows, peak, elapsed_s)]
@@ -719,7 +732,7 @@ def _embed_normalized(
                     teachers[i],
                     normalized_ds,
                     shard_indices[i],
-                    teacher_batch_size,
+                    effective_batch_size,
                     i,
                 ): i
                 for i in range(num_shards)
@@ -765,7 +778,7 @@ def _embed_normalized(
         rows=total_rows,
         rows_per_s=_rows_per_second(total_rows, compute_elapsed),
         devices=num_shards,
-        batch_size=teacher_batch_size,
+        batch_size=effective_batch_size,
     )
 
     merge_started = time.perf_counter()
