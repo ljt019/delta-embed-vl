@@ -45,8 +45,12 @@ class TeacherEmbedder:
         else:
             inputs = _build_teacher_batch_cpu(self.processor, samples)
         inputs = inputs.to(self.device)
-        outputs = self.model(**inputs)
-        pooled = last_token_pool(outputs.last_hidden_state, inputs["attention_mask"])
+        outputs = self.model(
+            **inputs,
+            use_cache=False,
+            return_dict=False,
+        )
+        pooled = last_token_pool(outputs[0], inputs["attention_mask"])
         return normalize(pooled.float())
 
 
