@@ -593,7 +593,7 @@ def _embedding_rebucket_key(
         width, height = image.size
         image_area = width * height
     prompt_chars = len(instruction or DEFAULT_EMBED_INSTRUCTION) + len(text or "")
-    return 2 * math.isqrt(image_area) + prompt_chars
+    return image_area // 1024 + prompt_chars // 4
 
 
 def _group_rebucketed_positions(
