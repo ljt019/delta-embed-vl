@@ -637,11 +637,18 @@ def _write_embedding_batch(
     )
 
 
-def _select_batch_rows(
+def _write_embedding_slice(
+    writer: ArrowWriter,
     batch_rows: dict[str, list[object]],
-    positions: list[int],
-) -> dict[str, list[object]]:
-    return {name: [values[idx] for idx in positions] for name, values in batch_rows.items()}
+    start: int,
+    stop: int,
+    embeddings: torch.Tensor,
+) -> None:
+    _write_embedding_batch(
+        writer,
+        _slice_batch_rows(batch_rows, start, stop),
+        embeddings,
+    )
 
 
 def _slice_batch_rows(
@@ -738,9 +745,11 @@ def _embed_shard(
                         pending_writes.popleft().result()
                     pending_writes.append(
                         writer_pool.submit(
-                            _write_embedding_batch,
+                            _write_embedding_slice,
                             writer,
-                            _slice_batch_rows(window_rows, next_write_start, stop),
+                            window_rows,
+                            next_write_start,
+                            stop,
                             window_embeddings[next_write_start:stop],
                         )
                     )
