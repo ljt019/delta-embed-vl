@@ -22,6 +22,9 @@ batch_size = 64
 interval = 15 
 max_saves = 5 
 
+[eval]
+batch_size = 4
+
 [wandb]
 project = "delta-embed-vl" 
 interval = 20
