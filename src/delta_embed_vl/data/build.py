@@ -777,7 +777,11 @@ def _embed_shard(
                         device=embeddings.device,
                         dtype=embeddings.dtype,
                     )
-                window_embeddings[positions] = embeddings
+                window_embeddings.index_copy_(
+                    0,
+                    torch.as_tensor(positions, device=embeddings.device),
+                    embeddings,
+                )
 
                 for position in positions:
                     slice_remaining[position // batch_size] -= 1
