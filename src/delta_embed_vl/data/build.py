@@ -701,20 +701,20 @@ def _embed_shard(
                 )
 
             window_embeddings: torch.Tensor | None = None
+            next_write_start = 0
+            slice_remaining = [
+                min(batch_size, len(chunk) - start)
+                for start in range(0, len(chunk), batch_size)
+            ]
             for positions in grouped_positions:
-                bucket_rows = _select_batch_rows(window_rows, positions)
                 inputs = [
                     EmbeddingInput(
-                        text=text or None,
-                        image=image,
-                        instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
+                        text=window_rows["text"][idx] or None,
+                        image=window_rows["image"][idx],
+                        instruction=window_rows["instruction"][idx]
+                        or DEFAULT_EMBED_INSTRUCTION,
                     )
-                    for text, image, instruction in zip(
-                        bucket_rows["text"],
-                        bucket_rows["image"],
-                        bucket_rows["instruction"],
-                        strict=True,
-                    )
+                    for idx in positions
                 ]
                 embeddings = teacher.embed(inputs)
                 if window_embeddings is None:
@@ -725,6 +725,28 @@ def _embed_shard(
                     )
                 window_embeddings[positions] = embeddings
 
+                for position in positions:
+                    slice_remaining[position // batch_size] -= 1
+
+                # Keep write order stable while releasing ready original slices early.
+                while (
+                    next_write_start < len(chunk)
+                    and slice_remaining[next_write_start // batch_size] == 0
+                ):
+                    stop = min(next_write_start + batch_size, len(chunk))
+                    if len(pending_writes) >= 8:
+                        pending_writes.popleft().result()
+                    pending_writes.append(
+                        writer_pool.submit(
+                            _write_embedding_batch,
+                            writer,
+                            _slice_batch_rows(window_rows, next_write_start, stop),
+                            window_embeddings[next_write_start:stop],
+                        )
+                    )
+                    rows_written += stop - next_write_start
+                    next_write_start = stop
+
                 if gpu_available:
                     free, total = torch.cuda.mem_get_info(device)
                     pct = (total - free) / total * 100
@@ -732,20 +754,6 @@ def _embed_shard(
 
             if window_embeddings is None:
                 continue
-
-            for start in range(0, len(chunk), batch_size):
-                stop = min(start + batch_size, len(chunk))
-                if len(pending_writes) >= 8:
-                    pending_writes.popleft().result()
-                pending_writes.append(
-                    writer_pool.submit(
-                        _write_embedding_batch,
-                        writer,
-                        _slice_batch_rows(window_rows, start, stop),
-                        window_embeddings[start:stop],
-                    )
-                )
-                rows_written += stop - start
 
         while pending_writes:
             pending_writes.popleft().result()
