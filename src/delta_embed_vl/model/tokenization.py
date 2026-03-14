@@ -156,8 +156,8 @@ def _build_processor_batch(
         processor_kwargs["images"] = image_inputs
     if video_inputs is not None:
         processor_kwargs["videos"] = video_inputs
-    if video_kwargs is not None:
-        processor_kwargs.update(video_kwargs)
+        if video_kwargs is not None:
+            processor_kwargs.update(video_kwargs)
     return processor(**processor_kwargs)
 
 
