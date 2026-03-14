@@ -387,64 +387,93 @@ def cauldron_config_samples(
         )
 
     for source_row, raw_row in enumerate(raw_dataset):
-        turns, raw_images = _validate_cauldron_turns(
-            source=source,
-            source_row=source_row,
-            texts=raw_row["texts"],
-            images=raw_row["images"],
-        )
-
-        resolved_images: list[Image.Image] = []
-        for image in raw_images:
-            resolved_image = coerce_image_to_rgb(image)
-            if resolved_image is not None:
-                resolved_images.append(resolved_image)
-        if not resolved_images:
-            continue
-
-        candidates: list[NormalizedSample] = []
-        for turn in turns:
-            query_text = _normalize_cauldron_text(turn["user"])
-            document_text = _normalize_cauldron_text(turn["assistant"])
-            for image in resolved_images:
-                if query_text is not None:
-                    candidates.append(
-                        NormalizedSample(
-                            source=source,
-                            role="query",
-                            text=query_text,
-                            image=image,
-                        )
-                    )
-                if document_text is not None:
-                    candidates.append(
-                        NormalizedSample(
-                            source=source,
-                            role="document",
-                            text=document_text,
-                            image=image,
-                        )
-                    )
-
-        emitted_any = False
-        for sample in _yield_fitting_samples(
-            candidates,
-            student_max_length=student_max_length,
-            batch_size=_CAULDRON_STUDENT_BATCH_SIZE,
-        ):
-            emitted_any = True
-            yield sample
-
-        if emitted_any:
-            continue
-
-        for image in resolved_images:
-            yield NormalizedSample(
+        try:
+            yield from _process_cauldron_row(
+                raw_row,
                 source=source,
-                role="document",
-                text=None,
-                image=image,
+                source_row=source_row,
+                student_max_length=student_max_length,
             )
+        except Exception:
+            logger.debug("Skipping %s row=%d: %s", source, source_row, _exc_oneliner())
+            continue
+
+
+def _exc_oneliner() -> str:
+    import sys
+
+    exc = sys.exc_info()[1]
+    if exc is None:
+        return "unknown error"
+    msg = str(exc).replace("\n", " ").strip()
+    return f"{type(exc).__name__}: {msg[:200]}"
+
+
+def _process_cauldron_row(
+    raw_row: Any,
+    *,
+    source: str,
+    source_row: int,
+    student_max_length: int,
+) -> Iterator[NormalizedSample]:
+    turns, raw_images = _validate_cauldron_turns(
+        source=source,
+        source_row=source_row,
+        texts=raw_row["texts"],
+        images=raw_row["images"],
+    )
+
+    resolved_images: list[Image.Image] = []
+    for image in raw_images:
+        resolved_image = coerce_image_to_rgb(image)
+        if resolved_image is not None:
+            resolved_images.append(resolved_image)
+    if not resolved_images:
+        return
+
+    candidates: list[NormalizedSample] = []
+    for turn in turns:
+        query_text = _normalize_cauldron_text(turn["user"])
+        document_text = _normalize_cauldron_text(turn["assistant"])
+        for image in resolved_images:
+            if query_text is not None:
+                candidates.append(
+                    NormalizedSample(
+                        source=source,
+                        role="query",
+                        text=query_text,
+                        image=image,
+                    )
+                )
+            if document_text is not None:
+                candidates.append(
+                    NormalizedSample(
+                        source=source,
+                        role="document",
+                        text=document_text,
+                        image=image,
+                    )
+                )
+
+    emitted_any = False
+    for sample in _yield_fitting_samples(
+        candidates,
+        student_max_length=student_max_length,
+        batch_size=_CAULDRON_STUDENT_BATCH_SIZE,
+    ):
+        emitted_any = True
+        yield sample
+
+    if emitted_any:
+        return
+
+    for image in resolved_images:
+        yield NormalizedSample(
+            source=source,
+            role="document",
+            text=None,
+            image=image,
+        )
 
 
 def normalization_source_names() -> list[str]:
