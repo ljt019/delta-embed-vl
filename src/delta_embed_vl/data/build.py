@@ -30,6 +30,7 @@ from datasets import Image as HFImage
 from datasets.arrow_writer import ArrowWriter
 from PIL import Image
 from qwen_vl_utils import smart_resize
+from transformers import Qwen3VLProcessor
 
 from delta_embed_vl import cfg
 from delta_embed_vl.data.download import load_raw_cauldron, load_raw_wikipedia
@@ -679,26 +680,96 @@ def _rebucket_window(
     min_pixels: int | None,
     max_pixels: int | None,
 ) -> list[list[int]]:
-    """Sort samples in a window by estimated token cost, return groups of indices."""
+    """Sort samples in a window by estimated token cost and form token-budgeted groups."""
     texts = window_rows["text"]
     images = window_rows["image"]
     instructions = window_rows["instruction"]
     n = len(texts)
     if n == 0:
         return []
-    order = sorted(
-        range(n),
-        key=lambda i: _estimate_sample_tokens(
+
+    sample_costs = [
+        _estimate_sample_tokens(
             texts[i],
             images[i],
             instructions[i],
             image_factor=image_factor,
             min_pixels=min_pixels,
             max_pixels=max_pixels,
-        ),
-        reverse=True,
+        )
+        for i in range(n)
+    ]
+    order = sorted(range(n), key=sample_costs.__getitem__, reverse=True)
+
+    target_group_count = max(1, math.ceil(n / batch_size))
+    target_group_cost = max(
+        max(sample_costs),
+        math.ceil(sum(sample_costs) / target_group_count),
     )
-    return [order[s : s + batch_size] for s in range(0, len(order), batch_size)]
+
+    groups: list[list[int]] = []
+    current_group: list[int] = []
+    current_cost = 0
+    for idx in order:
+        sample_cost = sample_costs[idx]
+        would_exceed_budget = (
+            current_group and current_cost + sample_cost > target_group_cost
+        )
+        reached_row_cap = len(current_group) >= batch_size
+        if would_exceed_budget or reached_row_cap:
+            groups.append(current_group)
+            current_group = []
+            current_cost = 0
+        current_group.append(idx)
+        current_cost += sample_cost
+
+    if current_group:
+        groups.append(current_group)
+    return groups
+
+
+def _plan_embed_shards(
+    normalized_ds: Dataset,
+    *,
+    num_shards: int,
+    processor: Qwen3VLProcessor,
+) -> tuple[list[list[int]], list[int], list[int]]:
+    """Greedily balance estimated token cost across devices."""
+    if num_shards < 1:
+        raise ValueError("num_shards must be at least 1.")
+
+    image_factor, min_pixels, max_pixels = _resolve_rebucket_vision_params(processor)
+    texts = normalized_ds["text"]
+    images = normalized_ds["image"]
+    instructions = normalized_ds["instruction"]
+    sample_costs = [
+        _estimate_sample_tokens(
+            texts[i],
+            images[i],
+            instructions[i],
+            image_factor=image_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        for i in range(len(normalized_ds))
+    ]
+
+    order = sorted(range(len(sample_costs)), key=sample_costs.__getitem__, reverse=True)
+    shard_indices = [[] for _ in range(num_shards)]
+    shard_costs = [0 for _ in range(num_shards)]
+    shard_max_costs = [0 for _ in range(num_shards)]
+
+    for idx in order:
+        cost = sample_costs[idx]
+        shard_id = min(
+            range(num_shards),
+            key=lambda s: (shard_costs[s], len(shard_indices[s])),
+        )
+        shard_indices[shard_id].append(idx)
+        shard_costs[shard_id] += cost
+        shard_max_costs[shard_id] = max(shard_max_costs[shard_id], cost)
+
+    return shard_indices, shard_costs, shard_max_costs
 
 
 def _embed_shard(
@@ -856,7 +927,20 @@ def _embed_normalized(
     )
 
     num_shards = len(devices)
-    shard_indices = [list(range(i, n, num_shards)) for i in range(num_shards)]
+    shard_indices, shard_costs, shard_max_costs = _plan_embed_shards(
+        normalized_ds,
+        num_shards=num_shards,
+        processor=teachers[0].processor,
+    )
+    for shard_id, indices in enumerate(shard_indices):
+        logger.info(
+            "Planned embed shard %d: rows=%d est_tokens=%d max_sample_tokens=%d device=%s",
+            shard_id,
+            len(indices),
+            shard_costs[shard_id],
+            shard_max_costs[shard_id],
+            devices[shard_id],
+        )
 
     temp_dirs: list[Path] = []
     compute_started = time.perf_counter()
