@@ -66,6 +66,8 @@ _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
 _REBUCKET_WINDOW_BATCHES = 4
 
+_QWEN_IMAGE_FACTOR = 28  # patch_size(14) * merge_size(2) for Qwen VL models
+
 
 @dataclass(frozen=True)
 class NormalizationTask:
@@ -135,10 +137,12 @@ def build_dataset(
         raise ValueError("teacher_batch_size must be at least 1.")
     build_started = time.perf_counter()
 
+    max_image_tokens: int = cfg["data"].get("max_image_tokens", 1280)
     normalized_ds = _load_or_build_normalized(
         limit=limit,
         limit_all=limit_all,
         max_length=max_length,
+        max_image_tokens=max_image_tokens,
         no_stream=no_stream,
         rebuild_normalized=rebuild_normalized,
         detailed_timings=detailed_timings,
@@ -221,6 +225,7 @@ def _load_or_build_normalized(
     limit: int | None,
     limit_all: bool,
     max_length: int,
+    max_image_tokens: int,
     no_stream: bool = False,
     rebuild_normalized: bool = False,
     detailed_timings: bool = False,
@@ -278,6 +283,7 @@ def _load_or_build_normalized(
                     task,
                     limit=resolved_limit,
                     max_length=max_length,
+                    max_image_tokens=max_image_tokens,
                     no_stream=no_stream,
                     temp_root=str(temp_root),
                 )
@@ -303,6 +309,7 @@ def _load_or_build_normalized(
                         task,
                         limit=resolved_limit,
                         max_length=max_length,
+                        max_image_tokens=max_image_tokens,
                         no_stream=no_stream,
                         temp_root=str(temp_root),
                     ): idx
@@ -496,6 +503,7 @@ def _normalize_task_to_arrow(
     *,
     limit: int | None,
     max_length: int,
+    max_image_tokens: int,
     no_stream: bool,
     temp_root: str,
 ) -> tuple[str, int, float]:
@@ -504,6 +512,7 @@ def _normalize_task_to_arrow(
             task,
             limit=limit,
             max_length=max_length,
+            max_image_tokens=max_image_tokens,
             no_stream=no_stream,
             temp_root=temp_root,
         )
@@ -519,6 +528,7 @@ def _normalize_task_to_arrow_impl(
     *,
     limit: int | None,
     max_length: int,
+    max_image_tokens: int,
     no_stream: bool,
     temp_root: str,
 ) -> tuple[str, int, float]:
@@ -546,7 +556,7 @@ def _normalize_task_to_arrow_impl(
         buffer.append(
             {
                 "text": sample.text,
-                "image": sample.image,
+                "image": _cap_image_resolution(sample.image, max_image_tokens),
                 "instruction": sample.instruction,
                 "source": sample.source,
                 "role": sample.role,
@@ -574,6 +584,23 @@ def _flush_buffer(buffer: list[dict[str, object]]) -> dict[str, list[object]]:
         "source": [r["source"] for r in buffer],
         "role": [r["role"] for r in buffer],
     }
+
+
+def _cap_image_resolution(
+    image: Image.Image | None,
+    max_image_tokens: int,
+) -> Image.Image | None:
+    """Downscale image so its token cost stays within budget."""
+    if image is None:
+        return None
+    max_pixels = max_image_tokens * _QWEN_IMAGE_FACTOR * _QWEN_IMAGE_FACTOR
+    w, h = image.size
+    if w * h <= max_pixels:
+        return image
+    target_h, target_w = smart_resize(
+        h, w, factor=_QWEN_IMAGE_FACTOR, max_pixels=max_pixels
+    )
+    return image.resize((target_w, target_h), Image.LANCZOS)
 
 
 def _detect_devices() -> list[str]:
@@ -715,8 +742,7 @@ def _embed_shard(
         return rows, groups
 
     win_slices = [
-        indices[s : s + window_size]
-        for s in range(0, len(indices), window_size)
+        indices[s : s + window_size] for s in range(0, len(indices), window_size)
     ]
 
     with (

@@ -17,6 +17,7 @@ text_only_ratio = 0.4
 id = "ljt019/delta-embed-vl-10000" 
 model_id = "Qwen/Qwen3-VL-Embedding-8B"
 batch_size = 64
+max_image_tokens = 1280
 
 [ckpt]
 interval = 15 
