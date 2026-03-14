@@ -7,9 +7,15 @@ import os
 import shutil
 import time
 from collections import deque
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import torch
 from datasets import (
@@ -22,6 +28,8 @@ from datasets import (
 )
 from datasets import Image as HFImage
 from datasets.arrow_writer import ArrowWriter
+from PIL import Image
+from qwen_vl_utils import smart_resize
 
 from delta_embed_vl import cfg
 from delta_embed_vl.data.download import load_raw_cauldron, load_raw_wikipedia
@@ -56,6 +64,7 @@ _DATASET_FEATURES = Features(
 
 _NORMALIZED_WRITE_BATCH_SIZE = 512
 _MIN_RAW_ROWS_PER_NORMALIZATION_TASK = 512
+_REBUCKET_WINDOW_BATCHES = 4
 
 
 @dataclass(frozen=True)
@@ -546,7 +555,9 @@ def _flush_buffer(buffer: list[dict[str, object]]) -> dict[str, list[object]]:
 
 def _detect_devices() -> list[str]:
     if not torch.cuda.is_available():
-        return ["cpu"]
+        raise RuntimeError(
+            "CUDA is required for data preparation. Refusing to fall back to CPU."
+        )
     return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
 
 
@@ -565,6 +576,79 @@ def _load_embedding_batch(
         batch = normalized_ds[indices]
 
     return {name: list(batch[name]) for name in _NORMALIZED_FEATURES}
+
+
+def _resolve_rebucket_vision_params(
+    processor: object,
+) -> tuple[int, int | None, int | None]:
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        raise AttributeError("Teacher processor does not expose an image_processor.")
+
+    patch_size = int(getattr(image_processor, "patch_size", 14))
+    merge_size = int(getattr(image_processor, "merge_size", 2))
+    min_pixels = getattr(image_processor, "min_pixels", None)
+    max_pixels = getattr(image_processor, "max_pixels", None)
+    return (
+        patch_size * merge_size,
+        None if min_pixels is None else int(min_pixels),
+        None if max_pixels is None else int(max_pixels),
+    )
+
+
+def _estimate_sample_tokens(
+    text: str | None,
+    image: Image.Image | None,
+    instruction: str | None,
+    *,
+    image_factor: int,
+    min_pixels: int | None,
+    max_pixels: int | None,
+) -> int:
+    """Estimate token cost using Qwen's resize helper and processor config."""
+    image_tokens = 0
+    if image is not None:
+        w, h = image.size
+        resized_height, resized_width = smart_resize(
+            h,
+            w,
+            factor=image_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        image_tokens = (resized_height * resized_width) // (image_factor * image_factor)
+    text_len = len(instruction or DEFAULT_EMBED_INSTRUCTION) + len(text or "")
+    return image_tokens + text_len // 4
+
+
+def _rebucket_window(
+    window_rows: dict[str, list[object]],
+    batch_size: int,
+    *,
+    image_factor: int,
+    min_pixels: int | None,
+    max_pixels: int | None,
+) -> list[list[int]]:
+    """Sort samples in a window by estimated token cost, return groups of indices."""
+    texts = window_rows["text"]
+    images = window_rows["image"]
+    instructions = window_rows["instruction"]
+    n = len(texts)
+    if n == 0:
+        return []
+    order = sorted(
+        range(n),
+        key=lambda i: _estimate_sample_tokens(
+            texts[i],
+            images[i],
+            instructions[i],
+            image_factor=image_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        ),
+        reverse=True,
+    )
+    return [order[s : s + batch_size] for s in range(0, len(order), batch_size)]
 
 
 def _embed_shard(
@@ -589,46 +673,78 @@ def _embed_shard(
     peak_pct = 0.0
 
     _MAX_PENDING_WRITES = 7
+    window_size = batch_size * _REBUCKET_WINDOW_BATCHES
+    image_factor, min_pixels, max_pixels = _resolve_rebucket_vision_params(
+        teacher.processor
+    )
 
     with ThreadPoolExecutor(max_workers=1) as writer_pool:
         pending_writes: deque[Future] = deque()
-        for start in range(0, len(indices), batch_size):
-            chunk = indices[start : start + batch_size]
-            batch_rows = _load_embedding_batch(normalized_ds, chunk)
-            inputs = [
-                EmbeddingInput(
-                    text=text or None,
-                    image=image,
-                    instruction=instruction or DEFAULT_EMBED_INSTRUCTION,
-                )
-                for text, image, instruction in zip(
-                    batch_rows["text"],
-                    batch_rows["image"],
-                    batch_rows["instruction"],
-                    strict=True,
-                )
-            ]
-            embeddings = teacher.embed(inputs)
 
-            if gpu_available:
-                free, total = torch.cuda.mem_get_info(device)
-                pct = (total - free) / total * 100
-                peak_pct = max(peak_pct, pct)
-
-            batch_payload = {
-                "text": batch_rows["text"],
-                "image": batch_rows["image"],
-                "instruction": batch_rows["instruction"],
-                "source": batch_rows["source"],
-                "role": batch_rows["role"],
-                "teacher_embedding": embeddings.detach().cpu().float().numpy(),
-            }
-            if len(pending_writes) >= _MAX_PENDING_WRITES:
-                pending_writes.popleft().result()
-            pending_writes.append(
-                writer_pool.submit(writer.write_batch, batch_payload)
+        for win_start in range(0, len(indices), window_size):
+            win_indices = indices[win_start : win_start + window_size]
+            window_rows = _load_embedding_batch(normalized_ds, win_indices)
+            groups = _rebucket_window(
+                window_rows,
+                batch_size,
+                image_factor=image_factor,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
             )
-            rows_written += len(chunk)
+
+            win_texts = window_rows["text"]
+            win_images = window_rows["image"]
+            win_instructions = window_rows["instruction"]
+
+            window_embeddings: torch.Tensor | None = None
+            for positions in groups:
+                inputs = [
+                    EmbeddingInput(
+                        text=str(win_texts[i]) if win_texts[i] else None,
+                        image=cast(Image.Image | None, win_images[i]),
+                        instruction=str(
+                            win_instructions[i] or DEFAULT_EMBED_INSTRUCTION
+                        ),
+                    )
+                    for i in positions
+                ]
+                embeddings = teacher.embed(inputs)
+
+                if window_embeddings is None:
+                    window_embeddings = torch.empty(
+                        (len(win_indices), embeddings.shape[1]),
+                        device=embeddings.device,
+                        dtype=embeddings.dtype,
+                    )
+                window_embeddings[positions] = embeddings
+
+                if gpu_available:
+                    free, total = torch.cuda.mem_get_info(device)
+                    pct = (total - free) / total * 100
+                    peak_pct = max(peak_pct, pct)
+
+            if window_embeddings is None:
+                continue
+
+            for write_start in range(0, len(win_indices), batch_size):
+                write_end = min(write_start + batch_size, len(win_indices))
+                batch_payload = {
+                    name: window_rows[name][write_start:write_end]
+                    for name in window_rows
+                }
+                batch_payload["teacher_embedding"] = (
+                    window_embeddings[write_start:write_end]
+                    .detach()
+                    .cpu()
+                    .float()
+                    .numpy()
+                )
+                if len(pending_writes) >= _MAX_PENDING_WRITES:
+                    pending_writes.popleft().result()
+                pending_writes.append(
+                    writer_pool.submit(writer.write_batch, batch_payload)
+                )
+                rows_written += write_end - write_start
 
         while pending_writes:
             pending_writes.popleft().result()

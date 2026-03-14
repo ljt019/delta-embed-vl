@@ -114,6 +114,7 @@ def _build_processor_batch(
     padding: bool,
     truncation: bool,
     max_length: int | None = None,
+    device: object | None = None,
 ) -> BatchFeature:
     tokenizer = get_processor_tokenizer(processor)
     resolved_inputs = [_resolve_input(sample) for sample in samples]
@@ -149,6 +150,8 @@ def _build_processor_batch(
     }
     if max_length is not None:
         processor_kwargs["max_length"] = max_length
+    if device is not None:
+        processor_kwargs["device"] = device
     if image_inputs is not None:
         processor_kwargs["images"] = image_inputs
     if video_inputs is not None:
@@ -239,10 +242,13 @@ def build_student_batch(
 def build_teacher_batch(
     processor: Qwen3VLProcessor,
     samples: list[EmbeddingInput],
+    *,
+    device: object | None = None,
 ) -> BatchFeature:
     return _build_processor_batch(
         processor,
         samples,
         padding=True,
         truncation=False,
+        device=device,
     )
