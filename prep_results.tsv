@@ -1,0 +1,82 @@
+commit	prepare_s	normalize_s	embed_s	rows	status	description
+0248e26	1276.945	219.068	1055.828	8163	keep	baseline after warming all raw caches to limit 50
+0248e26	1278.575	220.334	1056.147	8163	keep	baseline rerun with fully warm raw caches
+394bd44	1272.947	219.468	1051.395	8163	keep	enable tf32 teacher matmuls on cuda
+6d796cf	1064.599	221.648	840.860	8163	keep	overlap embed writes with next batch
+83418bb				crash	raise teacher batch size to 72 on 80gb gpus
+9c123b4	1062.182	218.160	841.891	8163	keep	load teacher from local hf snapshot
+7209e2f	1041.698	219.019	820.364	8163	keep	prefetch next embedding batch
+7209e2f	1041.242	219.185	819.795	8163	keep	prefetch next embedding batch rerun
+f20ad31				crash	raise teacher batch size to 68 on 80gb gpus
+b0f702e	1039.954	217.955	819.779	8163	keep	overlap embedding copy with next batch
+b0f702e	1040.110	218.473	819.426	8163	keep	overlap embedding copy with next batch rerun
+e8d2a05	1022.710	217.099	803.424	8163	keep	allow one queued embedding write
+e8d2a05	1023.729	218.327	803.113	8163	keep	allow one queued embedding write rerun
+eec033c	1010.253	217.077	790.911	8163	keep	allow two queued embedding writes
+eec033c	1012.001	218.425	791.334	8163	keep	allow two queued embedding writes rerun
+160f120	1001.153	217.011	781.864	8163	keep	allow three queued embedding writes
+160f120	1002.132	217.708	782.191	8163	keep	allow three queued embedding writes rerun
+cc26896	991.411	217.506	771.652	8163	keep	allow four queued embedding writes
+cc26896	993.125	218.589	772.271	8163	keep	allow four queued embedding writes rerun
+0126fa2	979.138	217.460	759.436	8163	keep	allow five queued embedding writes
+0126fa2	979.164	217.863	758.756	8163	keep	allow five queued embedding writes rerun
+5a5dcba	968.398	217.229	748.882	8163	keep	allow six queued embedding writes
+5a5dcba	966.922	217.061	747.634	8163	keep	allow six queued embedding writes rerun
+76d2856	963.397	216.828	744.454	8163	keep	allow seven queued embedding writes
+76d2856	963.603	216.423	744.959	8163	keep	allow seven queued embedding writes rerun
+e3d26c2	1024.909	218.872	803.849	8163	discard	split embedding copy and write stages
+e404e27	964.254	217.492	744.668	8163	discard	allow eight queued embedding writes
+3ca166e	993.803	216.911	774.641	8163	discard	group embedding writes into larger batches
+3d6b7bd	965.255	218.415	744.556	8163	discard	sample gpu utilization once per shard
+a1a1d56	960.050	217.718	740.073	8163	keep	raise teacher batch size to 65 on 80gb gpus
+a1a1d56	960.300	217.647	740.371	8163	keep	raise teacher batch size to 65 on 80gb gpus rerun
+235bfd9				crash	raise teacher batch size to 66 on 80gb gpus
+c744642	963.407	216.381	744.786	8163	discard	use six queued embedding writes with 65 batch
+edab26e				crash	retry oomed teacher batches at smaller size
+b1349d9	962.449	218.797	741.411	8163	discard	enable expandable cuda allocator segments
+ba86b64				crash	raise teacher batch size to 66 with six queued writes
+eb9a40d	961.985	219.234	740.500	8163	discard	skip redundant float cast before embedding writes
+33ebc76	963.049	219.182	741.526	8163	discard	force hugging face hub offline during prep
+6c2372d	960.639	220.926	737.376	8163	discard	disable teacher kv cache at inference
+1112670	983.686	233.685	747.735	8163	discard	raise teacher batch size to 66 without kv cache
+4b69afc	957.079	219.826	735.012	8163	keep	disable teacher kv cache at inference rerun
+b5d0448	962.912	222.207	738.425	8163	discard	allow eight queued writes with cache-free teacher
+85eac3e	960.237	222.355	735.585	8163	discard	overlap teacher prompt rendering with embed
+836605b	949.787	229.752	717.870	8163	keep	rebucket teacher batches within local windows
+836605b	938.790	225.097	711.434	8163	keep	rebucket teacher batches within local windows rerun
+e9d8c1a	944.217	220.593	721.301	8163	discard	expand rebucketing window to four batches
+33d4a2c	877.712	222.136	653.223	8163	keep	retune rebucketing heuristic for four-batch windows
+33d4a2c	876.633	222.772	651.611	8163	keep	retune rebucketing heuristic for four-batch windows rerun
+0843aed	877.367	219.277	655.835	8163	discard	expand rebucketing window to eight batches
+b96575a	877.395	220.620	654.554	8163	discard	expand rebucketing window to six batches
+426ed3a	882.873	221.514	659.117	8163	discard	raise rebucketed teacher batch size to 66
+f6c2db5	871.737	217.736	651.742	8163	keep	release ready rebucketed embedding writes
+f6c2db5	879.065	221.694	655.066	8163	keep	release ready rebucketed embedding writes rerun
+7fa1f26	885.293	230.521	652.509	8163	discard	prioritize rebucketed groups for earlier writes
+d3552e3	880.002	223.491	654.226	8163	discard	expand rebucketing window to six batches
+ff07cf3	878.757	235.178	641.360	8163	discard	expand rebucketing window to five batches first run
+ff07cf3	866.191	223.649	640.291	8163	keep	expand rebucketing window to five batches rerun
+279b75f	878.034	222.411	653.322	8163	discard	raise 80gb teacher batch size to 66
+5131bca	864.360	222.195	640.025	8163	keep	move embedding row slicing into writer thread
+5131bca	862.893	219.836	640.867	8163	keep	move embedding row slicing into writer thread rerun
+8c6ed99	859.617	221.396	636.102	8163	keep	grow short rebucketed teacher groups to 72
+8c6ed99	860.696	220.153	638.277	8163	keep	grow short rebucketed teacher groups to 72 rerun
+6beb714	1380.730	249.551	1156.591	4875	discard	balance dynamic rebucketed teacher groups invalid row count
+9ca30c0	863.654	221.815	639.640	8163	discard	retune dynamic rebucketed teacher cap to 68
+71670b6	869.978	225.031	642.848	8163	discard	retune dynamic rebucketed teacher cap to 70
+39c4429	879.296	221.049	655.979	8163	discard	expand dynamic rebucketing window to six batches
+a317c16	877.934	221.321	654.447	8163	discard	raise dynamic teacher base batch to 66
+b393bc0	856.547	218.921	635.499	8163	keep	allow nine pending embedding writes
+b393bc0	858.660	220.969	635.458	8163	keep	allow nine pending embedding writes rerun
+896d691	861.832	223.372	636.344	8163	discard	allow ten pending embedding writes
+1cc83c6	858.081	221.287	634.576	8163	discard	raise dynamic rebucketed teacher cap to 74
+a781349	858.228	219.566	636.354	8163	discard	raise dynamic rebucketed teacher cap to 76
+03c5855	872.734	232.516	638.103	8163	discard	raise dynamic rebucketed teacher cap to 80
+e6ee027	859.632	220.388	637.027	8163	discard	pad teacher batches to multiples of eight
+3650933	863.019	220.518	640.293	8163	discard	rerun dynamic rebucketed teacher cap 74
+7c74969	857.194	219.832	635.157	8163	discard	retune image weight in rebucketing key first run
+7c74969	862.005	222.666	637.112	8163	discard	retune image weight in rebucketing key rerun
+e99bb2b	855.092	221.062	631.840	8163	keep	fit rebucketing key to processor length
+e99bb2b	855.379	221.376	631.907	8163	keep	fit rebucketing key to processor length rerun
+0d512fb	870.133	234.963	633.005	8163	discard	retune rebucketed teacher cap under fitted key
+f721dfe	854.936	219.604	633.043	8163	keep	use index_copy for window embedding scatter

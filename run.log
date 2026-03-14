@@ -1,0 +1,110 @@
+2026-03-13 22:33:47,983 INFO delta_embed_vl.data.build: Rebuilding normalized cache by request
+2026-03-13 22:33:47,983 INFO delta_embed_vl.data.build: Normalizing samples across 12 CPU worker(s) (detected=12, tasks=32)
+2026-03-13 22:33:47,984 INFO delta_embed_vl.data.build: TIMING stage=normalize_prime_raw elapsed_s=0.000 sharded_sources=0 tasks=32
+2026-03-13 22:33:48,054 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/screen2words requested=50 cached=50 path=data/raw/cauldron/screen2words
+2026-03-13 22:33:48,055 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/localized_narratives requested=50 cached=50 path=data/raw/cauldron/localized_narratives
+2026-03-13 22:33:48,055 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/vsr requested=50 cached=50 path=data/raw/cauldron/vsr
+2026-03-13 22:33:48,055 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/tallyqa requested=50 cached=50 path=data/raw/cauldron/tallyqa
+2026-03-13 22:33:48,055 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/vqarad requested=50 cached=50 path=data/raw/cauldron/vqarad
+2026-03-13 22:33:48,055 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/vqav2 requested=50 cached=50 path=data/raw/cauldron/vqav2
+2026-03-13 22:33:48,056 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/rendered_text requested=50 cached=50 path=data/raw/cauldron/rendered_text
+2026-03-13 22:33:48,056 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/aokvqa requested=50 cached=50 path=data/raw/cauldron/aokvqa
+2026-03-13 22:33:48,057 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/docvqa requested=50 cached=50 path=data/raw/cauldron/docvqa
+2026-03-13 22:33:48,057 DEBUG delta_embed_vl.data.download: raw_cache_hit name=wikipedia requested=50 cached=50 path=data/raw/wikipedia
+2026-03-13 22:33:48,058 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/cocoqa requested=50 cached=50 path=data/raw/cauldron/cocoqa
+2026-03-13 22:33:48,067 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/visual7w requested=50 cached=50 path=data/raw/cauldron/visual7w
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,194 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,195 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,200 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,211 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,216 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,220 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,243 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,255 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,266 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,316 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,345 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:33:48,393 WARNING huggingface_hub.utils._http: Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-03-13 22:34:02,036 INFO delta_embed_vl.data.build: Normalized wikipedia: rows=431 elapsed_s=13.990 rows_per_s=30.8 (1/32)
+2026-03-13 22:34:02,078 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/textcaps requested=50 cached=50 path=data/raw/cauldron/textcaps
+2026-03-13 22:34:30,142 INFO delta_embed_vl.data.build: Normalized cauldron/aokvqa: rows=106 elapsed_s=42.096 rows_per_s=2.5 (2/32)
+2026-03-13 22:34:30,145 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/textvqa requested=50 cached=50 path=data/raw/cauldron/textvqa
+2026-03-13 22:34:34,693 INFO delta_embed_vl.data.build: Normalized cauldron/localized_narratives: rows=100 elapsed_s=46.647 rows_per_s=2.1 (3/32)
+2026-03-13 22:34:34,724 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/st_vqa requested=50 cached=50 path=data/raw/cauldron/st_vqa
+2026-03-13 22:34:43,858 INFO delta_embed_vl.data.build: Normalized cauldron/textcaps: rows=100 elapsed_s=41.822 rows_per_s=2.4 (4/32)
+2026-03-13 22:34:43,889 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/ocrvqa requested=50 cached=50 path=data/raw/cauldron/ocrvqa
+2026-03-13 22:34:47,011 INFO delta_embed_vl.data.build: Normalized cauldron/tallyqa: rows=228 elapsed_s=58.965 rows_per_s=3.9 (5/32)
+2026-03-13 22:34:47,014 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/visualmrc requested=50 cached=50 path=data/raw/cauldron/visualmrc
+2026-03-13 22:34:47,200 INFO delta_embed_vl.data.build: Normalized cauldron/vsr: rows=220 elapsed_s=59.154 rows_per_s=3.7 (6/32)
+2026-03-13 22:34:47,234 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/infographic_vqa requested=50 cached=50 path=data/raw/cauldron/infographic_vqa
+2026-03-13 22:34:53,479 INFO delta_embed_vl.data.build: Normalized cauldron/cocoqa: rows=256 elapsed_s=65.434 rows_per_s=3.9 (7/32)
+2026-03-13 22:34:53,484 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/chart2text requested=50 cached=50 path=data/raw/cauldron/chart2text
+2026-03-13 22:35:06,230 INFO delta_embed_vl.data.build: Normalized cauldron/vqav2: rows=346 elapsed_s=78.184 rows_per_s=4.4 (8/32)
+2026-03-13 22:35:06,262 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/dvqa requested=50 cached=50 path=data/raw/cauldron/dvqa
+2026-03-13 22:35:10,553 INFO delta_embed_vl.data.build: Normalized cauldron/screen2words: rows=100 elapsed_s=82.501 rows_per_s=1.2 (9/32)
+2026-03-13 22:35:10,584 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/vistext requested=50 cached=50 path=data/raw/cauldron/vistext
+2026-03-13 22:35:16,964 INFO delta_embed_vl.data.build: Normalized cauldron/st_vqa: rows=126 elapsed_s=42.270 rows_per_s=3.0 (10/32)
+2026-03-13 22:35:17,006 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/plotqa requested=50 cached=50 path=data/raw/cauldron/plotqa
+2026-03-13 22:35:27,874 INFO delta_embed_vl.data.build: Normalized cauldron/textvqa: rows=158 elapsed_s=57.731 rows_per_s=2.7 (11/32)
+2026-03-13 22:35:27,893 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/figureqa requested=50 cached=50 path=data/raw/cauldron/figureqa
+2026-03-13 22:35:45,587 INFO delta_embed_vl.data.build: Normalized cauldron/chart2text: rows=118 elapsed_s=52.108 rows_per_s=2.3 (12/32)
+2026-03-13 22:35:45,591 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/mapqa requested=50 cached=50 path=data/raw/cauldron/mapqa
+2026-03-13 22:35:47,427 INFO delta_embed_vl.data.build: Normalized cauldron/ocrvqa: rows=398 elapsed_s=63.564 rows_per_s=6.3 (13/32)
+2026-03-13 22:35:47,445 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/tat_qa requested=50 cached=50 path=data/raw/cauldron/tat_qa
+2026-03-13 22:35:54,469 INFO delta_embed_vl.data.build: Normalized cauldron/vistext: rows=100 elapsed_s=43.915 rows_per_s=2.3 (14/32)
+2026-03-13 22:35:54,488 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/hitab requested=50 cached=50 path=data/raw/cauldron/hitab
+2026-03-13 22:36:21,818 INFO delta_embed_vl.data.build: Normalized cauldron/dvqa: rows=400 elapsed_s=75.588 rows_per_s=5.3 (15/32)
+2026-03-13 22:36:21,828 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/multihiertt requested=50 cached=50 path=data/raw/cauldron/multihiertt
+2026-03-13 22:36:25,086 INFO delta_embed_vl.data.build: Normalized cauldron/vqarad: rows=400 elapsed_s=157.040 rows_per_s=2.5 (16/32)
+2026-03-13 22:36:25,113 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/finqa requested=50 cached=50 path=data/raw/cauldron/finqa
+2026-03-13 22:36:40,641 INFO delta_embed_vl.data.build: Normalized cauldron/figureqa: rows=400 elapsed_s=72.756 rows_per_s=5.5 (17/32)
+2026-03-13 22:36:40,661 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/robut_wikisql requested=50 cached=50 path=data/raw/cauldron/robut_wikisql
+2026-03-13 22:36:41,787 INFO delta_embed_vl.data.build: Normalized cauldron/visualmrc: rows=322 elapsed_s=114.775 rows_per_s=2.8 (18/32)
+2026-03-13 22:36:41,790 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/robut_sqa requested=50 cached=50 path=data/raw/cauldron/robut_sqa
+2026-03-13 22:36:43,628 INFO delta_embed_vl.data.build: Normalized cauldron/finqa: rows=144 elapsed_s=18.541 rows_per_s=7.8 (19/32)
+2026-03-13 22:36:43,631 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/robut_wtq requested=50 cached=50 path=data/raw/cauldron/robut_wtq
+2026-03-13 22:36:50,082 INFO delta_embed_vl.data.build: Normalized cauldron/tat_qa: rows=400 elapsed_s=62.639 rows_per_s=6.4 (20/32)
+2026-03-13 22:36:50,112 DEBUG delta_embed_vl.data.download: raw_cache_hit name=cauldron/ai2d requested=50 cached=50 path=data/raw/cauldron/ai2d
+2026-03-13 22:36:53,601 INFO delta_embed_vl.data.build: Normalized cauldron/docvqa: rows=338 elapsed_s=185.555 rows_per_s=1.8 (21/32)
+2026-03-13 22:36:54,320 INFO delta_embed_vl.data.build: Normalized cauldron/infographic_vqa: rows=292 elapsed_s=127.119 rows_per_s=2.3 (22/32)
+2026-03-13 22:36:56,269 INFO delta_embed_vl.data.build: Normalized cauldron/visual7w: rows=368 elapsed_s=188.223 rows_per_s=2.0 (23/32)
+2026-03-13 22:36:57,722 INFO delta_embed_vl.data.build: Normalized cauldron/hitab: rows=218 elapsed_s=63.243 rows_per_s=3.4 (24/32)
+2026-03-13 22:37:05,222 INFO delta_embed_vl.data.build: Normalized cauldron/robut_wikisql: rows=120 elapsed_s=24.581 rows_per_s=4.9 (25/32)
+2026-03-13 22:37:05,910 INFO delta_embed_vl.data.build: Normalized cauldron/mapqa: rows=390 elapsed_s=80.322 rows_per_s=4.9 (26/32)
+2026-03-13 22:37:06,577 INFO delta_embed_vl.data.build: Normalized cauldron/plotqa: rows=400 elapsed_s=109.584 rows_per_s=3.7 (27/32)
+2026-03-13 22:37:10,306 INFO delta_embed_vl.data.build: Normalized cauldron/robut_wtq: rows=112 elapsed_s=26.678 rows_per_s=4.2 (28/32)
+2026-03-13 22:37:14,983 INFO delta_embed_vl.data.build: Normalized cauldron/multihiertt: rows=408 elapsed_s=53.157 rows_per_s=7.7 (29/32)
+2026-03-13 22:37:17,449 INFO delta_embed_vl.data.build: Normalized cauldron/robut_sqa: rows=354 elapsed_s=35.661 rows_per_s=9.9 (30/32)
+2026-03-13 22:37:22,673 INFO delta_embed_vl.data.build: Normalized cauldron/ai2d: rows=210 elapsed_s=32.584 rows_per_s=6.4 (31/32)
+2026-03-13 22:37:25,240 INFO delta_embed_vl.data.build: Normalized cauldron/rendered_text: rows=100 elapsed_s=217.194 rows_per_s=0.5 (32/32)
+2026-03-13 22:37:25,376 INFO delta_embed_vl.data.build: Normalized 8163 samples
+2026-03-13 22:37:25,376 INFO delta_embed_vl.data.build: TIMING stage=normalize_generate elapsed_s=217.393 rows=8163 rows_per_s=37.550 tasks=32 workers=12
+2026-03-13 22:37:25,424 INFO delta_embed_vl.data.build: TIMING stage=normalize_merge elapsed_s=0.048 rows=8163 shards=32
+2026-03-13 22:37:27,587 INFO delta_embed_vl.data.build: TIMING stage=normalize_save elapsed_s=2.162 rows=8163 path=data/normalized
+2026-03-13 22:37:27,587 INFO delta_embed_vl.data.build: TIMING stage=normalize_total elapsed_s=219.604 rows=8163 rows_per_s=37.172 limit=50
+2026-03-13 22:37:27,588 INFO delta_embed_vl.data.build: Embedding normalized samples with teacher
+2026-03-13 22:37:27,606 INFO delta_embed_vl.data.build: Loading teacher on 1 device(s): cuda:0
+2026-03-13 22:37:29,009 INFO delta_embed_vl.data.teacher: Loading teacher with flash_attention_2 attention
+Loading weights:   0%|          | 0/749 [00:00<?, ?it/s]Loading weights: 100%|██████████| 749/749 [00:00<00:00, 9460.51it/s]
+2026-03-13 22:37:31,770 INFO delta_embed_vl.data.build: TIMING stage=embed_teacher_load elapsed_s=4.164 devices=1
+2026-03-13 22:48:00,626 WARNING delta_embed_vl.data.build: GPU utilization peaked at 63% — increase data.batch_size in config.toml for faster prep
+2026-03-13 22:48:00,626 INFO delta_embed_vl.data.build: Embedded 8163 rows across 1 device(s)
+2026-03-13 22:48:00,626 INFO delta_embed_vl.data.build: TIMING stage=embed_shard elapsed_s=628.854 shard=0 device=cuda:0 rows=8163 rows_per_s=12.981 peak_gpu_pct=63.215
+2026-03-13 22:48:00,626 INFO delta_embed_vl.data.build: TIMING stage=embed_compute elapsed_s=628.856 rows=8163 rows_per_s=12.981 devices=1 batch_size=65
+2026-03-13 22:48:00,631 INFO delta_embed_vl.data.build: TIMING stage=embed_merge elapsed_s=0.004 rows=8163 shards=1
+2026-03-13 22:48:00,631 INFO delta_embed_vl.data.build: TIMING stage=embed_total elapsed_s=633.043 rows=8163 rows_per_s=12.895 devices=1
+2026-03-13 22:48:02,919 INFO delta_embed_vl.data.build: Dataset saved: rows=8163 path=data/dataset
+2026-03-13 22:48:02,919 INFO delta_embed_vl.data.build: TIMING stage=dataset_save elapsed_s=2.253 rows=8163 path=data/dataset
+2026-03-13 22:48:02,919 INFO delta_embed_vl.data.build: TIMING stage=prepare_total elapsed_s=854.936 rows=8163 rows_per_s=9.548 limit=50 no_stream=false rebuild_normalized=true push_to_hub=false
