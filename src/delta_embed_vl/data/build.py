@@ -499,6 +499,29 @@ def _normalize_task_to_arrow(
     no_stream: bool,
     temp_root: str,
 ) -> tuple[str, int, float]:
+    try:
+        return _normalize_task_to_arrow_impl(
+            task,
+            limit=limit,
+            max_length=max_length,
+            no_stream=no_stream,
+            temp_root=temp_root,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Normalization failed for {task.source} "
+            f"(shard {task.shard_index}/{task.num_shards}): {exc}"
+        ) from None
+
+
+def _normalize_task_to_arrow_impl(
+    task: NormalizationTask,
+    *,
+    limit: int | None,
+    max_length: int,
+    no_stream: bool,
+    temp_root: str,
+) -> tuple[str, int, float]:
     task_started = time.perf_counter()
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
