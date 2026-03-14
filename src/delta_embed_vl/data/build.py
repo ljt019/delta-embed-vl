@@ -6,7 +6,8 @@ import math
 import os
 import shutil
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -587,8 +588,10 @@ def _embed_shard(
     gpu_available = device.startswith("cuda") and torch.cuda.is_available()
     peak_pct = 0.0
 
+    _MAX_PENDING_WRITES = 7
+
     with ThreadPoolExecutor(max_workers=1) as writer_pool:
-        pending_write = None
+        pending_writes: deque[Future] = deque()
         for start in range(0, len(indices), batch_size):
             chunk = indices[start : start + batch_size]
             batch_rows = _load_embedding_batch(normalized_ds, chunk)
@@ -620,13 +623,15 @@ def _embed_shard(
                 "role": batch_rows["role"],
                 "teacher_embedding": embeddings.detach().cpu().float().numpy(),
             }
-            if pending_write is not None:
-                pending_write.result()
-            pending_write = writer_pool.submit(writer.write_batch, batch_payload)
+            if len(pending_writes) >= _MAX_PENDING_WRITES:
+                pending_writes.popleft().result()
+            pending_writes.append(
+                writer_pool.submit(writer.write_batch, batch_payload)
+            )
             rows_written += len(chunk)
 
-        if pending_write is not None:
-            pending_write.result()
+        while pending_writes:
+            pending_writes.popleft().result()
 
     writer.finalize()
     return temp_dir, rows_written, peak_pct, time.perf_counter() - shard_started
