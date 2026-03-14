@@ -678,19 +678,37 @@ def _embed_shard(
         teacher.processor
     )
 
-    with ThreadPoolExecutor(max_workers=1) as writer_pool:
-        pending_writes: deque[Future] = deque()
+    def _load_and_rebucket(
+        win_indices: list[int],
+    ) -> tuple[dict[str, list[object]], list[list[int]]]:
+        rows = _load_embedding_batch(normalized_ds, win_indices)
+        groups = _rebucket_window(
+            rows,
+            batch_size,
+            image_factor=image_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        return rows, groups
 
-        for win_start in range(0, len(indices), window_size):
-            win_indices = indices[win_start : win_start + window_size]
-            window_rows = _load_embedding_batch(normalized_ds, win_indices)
-            groups = _rebucket_window(
-                window_rows,
-                batch_size,
-                image_factor=image_factor,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
-            )
+    win_slices = [
+        indices[s : s + window_size]
+        for s in range(0, len(indices), window_size)
+    ]
+
+    with (
+        ThreadPoolExecutor(max_workers=1) as writer_pool,
+        ThreadPoolExecutor(max_workers=1) as loader_pool,
+    ):
+        pending_writes: deque[Future] = deque()
+        pending_load = loader_pool.submit(_load_and_rebucket, win_slices[0])
+
+        for win_idx, win_indices in enumerate(win_slices):
+            window_rows, groups = pending_load.result()
+            if win_idx + 1 < len(win_slices):
+                pending_load = loader_pool.submit(
+                    _load_and_rebucket, win_slices[win_idx + 1]
+                )
 
             win_texts = window_rows["text"]
             win_images = window_rows["image"]
