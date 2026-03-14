@@ -42,8 +42,8 @@ class TeacherEmbedder:
             device=self.device,
         )
         inputs = inputs.to(self.device)
-        outputs = self.model(**inputs)
-        pooled = last_token_pool(outputs.last_hidden_state, inputs["attention_mask"])
+        outputs = self.model(**inputs, use_cache=False, return_dict=False)
+        pooled = last_token_pool(outputs[0], inputs["attention_mask"])
         return normalize(pooled.float())
 
 
@@ -72,6 +72,10 @@ def load_teacher(
         raise RuntimeError(
             "CUDA is required for teacher embedding, but torch.cuda.is_available() is false."
         )
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
 
     processor = cast(
         Qwen3VLProcessor,
