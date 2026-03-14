@@ -82,7 +82,6 @@ def load_teacher(
         AutoProcessor.from_pretrained(
             model_id,
             trust_remote_code=True,
-            local_files_only=True,
         ),
     )
     tokenizer = get_processor_tokenizer(processor)
@@ -97,7 +96,6 @@ def load_teacher(
         torch_dtype=dtype,
         low_cpu_mem_usage=True,
         attn_implementation=resolved_attn_implementation,
-        local_files_only=True,
     )
 
     model = nn.Module.to(model, device=torch.device(device))
